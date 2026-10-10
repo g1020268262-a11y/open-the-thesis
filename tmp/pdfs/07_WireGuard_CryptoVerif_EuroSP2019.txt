@@ -1,0 +1,1090 @@
+            A Mechanised Cryptographic Proof of the
+           WireGuard Virtual Private Network Protocol
+                  Benjamin Lipp                              Bruno Blanchet                     Karthikeyan Bhargavan
+                   INRIA Paris                                INRIA Paris                             INRIA Paris
+              benjamin.lipp@inria.fr                     bruno.blanchet@inria.fr             karthikeyan.bhargavan@inria.fr
+
+
+
+   Abstract—WireGuard is a free and open source Virtual Private           have multiple interoperable implementations that are available
+Network (VPN) that aims to replace IPsec and OpenVPN. It is               on all mainstream operating systems, so the VPN software can
+based on a new cryptographic protocol derived from the Noise              be easily built as a layer on top. Second, standards are designed
+Protocol Framework. This paper presents the first mechanised
+cryptographic proof of the protocol underlying WireGuard, using           to be future-proof by relying on versioning and cryptographic
+the CryptoVerif proof assistant.                                          agility, so that a VPN protocol can easily move from one
+   We analyse the entire WireGuard protocol as it is, including           protocol version or cryptographic algorithm to another if (say)
+transport data messages, in an ACCE-style model. We contribute            a weakness were found on some configuration. Third, published
+proofs for correctness, message secrecy, forward secrecy, mutual          standards typically have been closely scrutinised by numerous
+authentication, session uniqueness, and resistance against key
+compromise impersonation, identity mis-binding, and replay                interested parties, and hence are believed to be less likely to
+attacks. We also discuss the strength of the identity hiding              contain obvious security flaws.
+provided by WireGuard.                                                       Conversely, using a standard protocol also has its disadvan-
+   Our work also provides novel theoretical contributions that            tages. Standardisation takes time, and so a standard protocol
+are reusable beyond WireGuard. First, we extend CryptoVerif to            may not use the most modern cryptographic algorithms. On
+account for the absence of public key validation in popular Diffie-
+Hellman groups like Curve25519, which is used in many modern
+                                                                          the contrary, the need for interoperability and backwards
+protocols including WireGuard. To our knowledge, this is the              compatibility often force implementations to continue support
+first mechanised cryptographic proof for any protocol employing           for obsolete cryptographic algorithms, leading to cryptanalytic
+such a precise model. Second, we prove several indifferentiability        attacks [3] and software flaws [4]. Over time, standards and
+lemmas that are useful to simplify the proofs for sequences of            their implementations can grow to an unmanageable size that
+key derivations.
+   Index Terms—security protocols, verification, computational
+                                                                          can no longer be studied as a whole, allowing logical flaws to
+model, VPN                                                                hide in unused corners of the protocol [5].
+                                                                             Consequently, many new secure channel protocols eschew
+                         I. I NTRODUCTION                                 standardisation in favour of a lean design that uses only modern
+                                                                          cryptography and supports minimal cryptographic agility. The
+   The traditional distinction between a secure intranet and              succinctness of the protocol description aids auditability, and
+the untrusted Internet is becoming less relevant as more and              the lack of optional features reduces complexity. Examples of
+more enterprises host internal services on cloud-based servers            this approach are the Signal protocol [6] used in many secure
+distributed across multiple data centres. Sensitive data that used        messaging systems and the Noise protocol framework [7].
+to travel only between physically proximate machines within                  WireGuard is a VPN protocol that adopts this design
+secure buildings is now sent across an unknown number of                  philosophy [8]. It implements and extends a secure channel
+network links that may be controlled by malicious entities.               protocol derived from the Noise framework, and it chooses a
+   To maintain the security of such distributed intranets, the            small set of modern cryptographic primitives. By making these
+most powerful tools at the disposal of system administrators are          choices, WireGuard is able to provide a high-quality VPN in a
+Virtual Private Network (VPN) protocols that set up low-level             few thousand lines of code, and is currently being considered
+secure channels between machines, and hence can be used                   for adoption within the Linux kernel. The design of WireGuard
+to transparently protect all the data exchanged between them.             is detailed and informally analysed in [8], but a protocol of
+Indeed, all leading cloud providers now offer VPN gateways,               such importance deserves a thorough security analysis.
+so that enterprises can treat cloud-based servers as if they were            A Need for Mechanised Proofs. Having a succinct, well-
+located within their intranet.1                                           documented description is a good basis for understanding,
+   Standards vs. Custom Protocols. Most popular VPN                       auditing, and implementing a custom cryptographic protocol,
+solutions are based on Internet standards like IPsec [1] and              but in itself is no guarantee that the protocol is secure. Symbolic
+TLS [2], for several reasons. First, these protocols typically            analysis with tools like ProVerif [9] and Tamarin [10] can
+   1 https://cloud.google.com/vpn/docs/concepts/overview,
+                                                                          help find logical flaws, and WireGuard already has been
+https://docs.aws.amazon.com/vpc/latest/userguide/vpn-connections.html,    analysed using Tamarin [11]. However, symbolic analyses do
+https://azure.microsoft.com/en-us/services/vpn-gateway/                   not constitute a full cryptographic proof. For example, they
+cannot demonstrate the absence of cryptanalytic attacks on             identity hiding and denial-of-service protections provided by
+secure channels and VPNs (e.g. [3].)                                   WireGuard. We conclude with a discussion of the strengths
+   Cryptographic proofs provide the highest form of formal             and weaknesses of WireGuard, and propose improvements that
+assurance, but writing proofs by hand requires significant             would allow for stronger security theorems.
+expertise and effort, especially if the proof is to account for the       Our work also provides contributions reusable beyond the
+precise low-level details of a real-world protocol. And as proofs      proof of WireGuard. To the best of our knowledge, this is the
+get larger, the risk of introducing proof errors becomes non-          first mechanised proof for any cryptographic protocol that takes
+negligible. All this effort is hard to justify for a custom protocol   into account the precise structure of the Curve25519 group.
+which may change as the software evolves. For example, a               We also prove a series of indifferentiability results that allow
+manual cryptographic proof for the WireGuard protocol appears          us to simplify sequences of random oracle calls, and we made
+in [12], but this proof would need to be carefully reviewed            several extensions to CryptoVerif that we mention in the rest
+and adapted if the WireGuard protocol were to change in any            of the paper when we use them. These extensions are included
+way or if a variant of WireGuard were to be proposed.                  in CryptoVerif 2.01 available at https://cryptoverif.inria.fr/.
+   We advocate the use of mechanised provers to build                     Our models of WireGuard are available at https://cryptoverif.
+cryptographic proofs, so that they can be checked for errors,          inria.fr/WireGuard and more details are available in the long
+and can be easily modified to accommodate different variants of        version of the paper [15].
+the protocol. In this paper, we rely on the CryptoVerif protocol
+verifier [13], [14] to build a proof of WireGuard. CryptoVerif                                II. W IRE G UARD
+relies on a computational model of cryptography, and generates            WireGuard [8] establishes a VPN tunnel between two remote
+machine-checkable proofs by sequences of games, like those             hosts in order to securely encapsulate all Internet Protocol (IP)
+manually written by cryptographers.                                    traffic between them. The main design goals of WireGuard are
+   Uncovering Real-World Cryptographic Assumptions. A                  to be simple, fast, modern, and secure. In order to establish a
+mechanised proof also allows the analyst to experiment with a          tunnel, a system administrator only needs to configure the IP
+variety of cryptographic assumptions and discover the precise          address and long-term public key for the remote host. With this
+set of assumptions that a protocol’s security depends on.              information, WireGuard can establish a secure channel, using
+   In some cases, a protocol may require an unusual assumption         a protocol derived from the Noise framework, instantiated with
+about a hash function, or a stronger assumption about encryp-          fast, modern cryptographic primitives like Curve25519 and
+tion than one may have expected, and these cases can provide           BLAKE2. The full WireGuard VPN is implemented in a few
+a guide to implementers on what concrete cryptographic algo-           thousand lines of code that can run on multiple platforms, but
+rithms should or should not be used to instantiate the protocol.       for performance, is usually run within the operating system
+For example, in our analysis of WireGuard, we find that most           kernel. In particular, WireGuard is in the process of being
+of the standard properties require only standard assumptions           incorporated into the Linux kernel (most likely Linux 4.2/5.0),
+about the underlying authenticated encryption scheme (AEAD)            as an alternative to IPsec.
+but identity hiding requires a stronger assumption, which is              In this section, we focus on the cryptographic design
+satisfied by the specific algorithms used by WireGuard, but            of WireGuard. We begin by describing the secure channel
+may not be provided by other AEAD constructions.                       component, then the extensions WireGuard makes for denial-of-
+   In other cases, a protocol’s use of a cryptographic primitive       service and stealthy operation. We end the section by detailing
+may motivate a new, more precise model of the primitive.               the concrete cryptographic algorithms used by WireGuard and
+Protocols like WireGuard seek to depend on a small set of              the list of informal security goals it seeks to achieve.
+primitives and reuse them in different ways. For example,
+WireGuard relies on the Curve25519 elliptic curve Diffie-              A. Secure Channel Protocol: Noise IKpsk2
+Hellman operation for an ephemeral key exchange as well                   Noise [7] is a framework for building two-party crypto-
+as for entity authentication. It uses Curve25519 public keys           graphic protocols that are secure by construction. Using the
+both as identities and as unique nonces to identify sessions.          building blocks in this framework, a designer can create a new
+To verify that Curve25519 is appropriate for all these usages,         protocol that matches a desired subset of security guarantees:
+and to prove the absence of attacks such as replays, identity          mutual or optional authentication, identity hiding, forward
+mis-binding, and key compromise impersonation, we need                 secrecy, etc. The Noise specification also includes a list of
+to account for the details of the Curve25519 group, rather             curated pre-defined protocols, with an informal analysis of their
+than rely on a generic Diffie-Hellman assumption. Hence, we            message-by-message security claims. WireGuard instantiates
+propose a new model for Curve25519 in CryptoVerif and prove            one of these protocols, which is called IKpsk2, and extends it
+WireGuard secure against this model.                                   to provide further guarantees needed by VPNs.
+   Contributions. We present the first mechanised proof for               The secure channel protocol is depicted in Figure 1a, and
+the cryptographic design of the WireGuard VPN, including the           the cryptographic computations are detailed in Figure 1b, using
+Noise IKpsk2 secure channel protocol it uses. Our analysis             notations similar to [8]. Before the protocol begins, the initiator
+is done on WireGuard v1 as specified in [8]. In addition to            i and the responder r are assumed to have exchanged their
+classic key exchange security for IKpsk2, we examine the               long-term static public keys (Sipub , Srpub ). Optionally, they may
+      Initiator i                                                   Responder r         - - - - - - - - First - - - - - - - - - - - - -
+                First(Ii , Eipub , Sipub , ts  , mac 1 , mac 2 = 016 )                 Eipub :  (Eipriv , Eipub ) ←$ keygen()
+                                      
+                                                                                                              C0 ← hash(protocol_name)
+              Second(Ir , Ii , Erpub , empty  , mac1 , mac2 = 016 )
+                                                                                                              H0 ← hash(C0 kprologue)
+ ,→                                                                               ,→
+                        TransportData(Ii , N1→ , P1  )                                                        H1 ← hash(H0 kSrpub )
+
+                                                                                                             C1 ← hkdf 1 (C0 , Eipub )
+                        TransportData(Ir , N2← , P2  )
+                                                                                                               H2 ← hash(H1 kEipub )
+                        TransportData(Ii , N3→ , P3  )                                                    C2 kk1 ← hkdf 2 (C1 , dh(Eipriv , Srpub ))
+                                         ···
+                                                                                         Sipub
+                                                                                            
+                                                                                               :             Sipub
+                                                                                                                
+                                                                                                                   ← aenc(k1 , 0, Sipub , H2 )
+                                                                                                               H3 ← hash(H2 kSipub
+                                                                                                                                
+                                                                                                                                   )
+          Figure 1a: WireGuard’s protocol messages.                                                        C3 kk2 ← hkdf 2 (C2 , dh(Sipriv , Srpub ))
+                                                                                           ts  :              ts  ← aenc(k2 , 0, timestamp(), H3 )
+                                                                                                              H4 ← hash(H3 kts )
+                                                                                        mac 1 :        mac 1 ← mac(hash(labelmac1 kSrpub ), msg α )
+                                                                                        - - - - - - - - Second - - - - - - - - - - - -
+                                                                                         Erpub :    (Erpriv , Erpub ) ←$ keygen()
+      Initiator i                                                   Responder r                                C4 ← hkdf 1 (C3 , Erpub )
+                      First(Ii , . . . , mac 1 , mac 2 = 0 )   16                                              H5 ← hash(H4 kErpub )
+                                                                                                               C5 ← hkdf 1 (C4 , dh(Erpriv , Eipub ))
+                         CookieReply(Ii , nonce, τ  )
+                                                                                                               C6 ← hkdf 1 (C5 , dh(Erpriv , Sipub ))
+                          First(Ii , . . . , mac 1 , mac 2 )                                            C7 kπkk3 ← hkdf 3 (C6 , psk )
+                      (continues with standard handshake)                                                    H6 ← hash(H5 kπ)
+                                                                                       empty  :         empty  ← aenc(k3 , 0, empty, H6 )
+                                                                                                             H7 ← hash(H6 kempty  )
+ - - - - - - - - CookieReply - - - - - - - -
+                                                                                        mac 1 :         mac 1 ← mac(hash(labelmac1 kSipub ), msg α )
+        Rr ←$ {0, 1}256 (refresh only every 2 minutes)
+                                                                                        - - - - - - - - Key Derivation - - - - - - - -
+         τ ← mac(Rr , Ai ) with Ai = IPi kPorti
+                                                                                                     T → kT ← ← hkdf 2 (C7 , empty)
+      nonce ←$ {0, 1}192
+                                                                                        - - - - - - - -       TransportData - - - - - - - - -
+           τ  ← xaenc(hash(labelcookie kSrpub ), nonce, τ, mac 1 )
+                                                                                                              P1  ← aenc(T → , N1→ = 0, P1 , empty)
+ - - - - - - - - Non-zero mac 2                      - - - - - - - -                                          P2  ← aenc(T ← , N2← = 0, P2 , empty)
+      mac 2 ← mac(τ, msg β )                                                                                  P3  ← aenc(T → , N3→ = 1, P3 , empty)
+
+           Figure 1c: Cookie mechanism under load.                                     Figure 1b: Cryptographic Computations for Protocol Messages.
+Figure 1: (a) An overview of WireGuard’s main protocol messages; (b) the cryptographic computations used to create these
+messages; they need to be adapted accordingly for the receiving side; and (c) the cookie mechanism used by WireGuard to
+protect hosts against Denial-of-Service attacks. We write x for a variable containing an encryption of x; x is just a variable
+identifier. msg α refers to all the bytes of a message up to but not including mac 1 , msg β is the same but including mac 1 .
+Session key derivation takes places after the second protocol message, symbolised by ,→, at which point the initiator can send
+messages. The end of the handshake is symbolised by , after which transport data messages can be sent in both directions. The
+cookie mechanism is depicted in one direction, initiator to responder, but can actually be used by either initiator or responder,
+whichever is under load.
+
+
+have also established a pre-shared symmetric key (psk ); if this                         In response, r sends the second handshake message containing:
+key is absent it is set to a key-sized bitstring of zeros.                                  • Ii : i’s session identifier,
+   Message Exchange. The protocol begins when i sends the                                   • Ir : a fresh session identifier, generated by r,
+first handshake message to r, which includes the following                                       pub
+                                                                                            • Er : a fresh ephemeral public key, generated by r,
+components:                                                                                 • empty  : an empty bytestring encrypted with a key that
+   • Ii : a fresh session identifier, generated by i,                                          can be computed only by i and r, and
+        pub
+   • Ei     : a fresh ephemeral public key, generated by i,                                 • mac 1 , mac 2 : message authentication codes (see §II-B).
+       pub
+   • Si  : i’s static public key, encrypted for r,                                         The encrypted payloads in the two messages serve as
+   • ts  : a timestamp, encrypted with a key that can be                                authenticators: by computing the corresponding encryption
+      computed only by i and r, and                                                      key, each party proves that it knows the private key for its
+   • mac 1 , mac 2 : message authentication codes (see §II-B).                           static public key. The encryption key for the second message
+also requires knowledge of the optional psk providing an                     Each chaining key is mixed into the next chaining key via
+additional authentication guarantee. The two ephemeral keys               an hkdf key derivation that also outputs encryption keys as
+add fresh session-specific key material that can be used to               needed. This chain of key derivations outputs two encryption
+compute (forward) secret session keys known only to i and r.              keys (k1 , k2 ) for the first handshake message, an encryption
+   At the end of these two messages, i and r derive authenti-             key (k3 ) and a PSK identifier (π) for the second message, and
+cated encryption keys (T → , T ← ) that can be used to transport          traffic keys (T ← , T → ) for all subsequent transport messages.
+IP traffic in the two directions. Importantly, i sends the first             To encrypt each message, WireGuard uses an authenticated
+transport message, hence confirming the successful completion             encryption scheme with associated data (AEAD) that takes a
+of the handshake to r, before r sends it any encrypted traffic.           key, a counter, a plaintext (padded up to the nearest blocksize)
+Each of these transport messages includes:                                and an optional hash value as associated data. The encryptions
+   • Ii or Ir : the recipient’s session identifier,
+                                                                          in the handshake messages use the current transcript hash
+         ←            →
+   • Nj or Nj : the current message counter,
+                                                                          (H 2 , H3 , H6 ) as associated data, which guarantees that the
+
+   • Pj : an IP datagram, encrypted under the traffic key.
+                                                                          two   participants have a consistent session transcript. Transport
+                                                                          messages use an empty string as associated data. The message
+Cryptographic Computations. Figure 1b describes how each counter is initially set to 0 for each AEAD key and incremented
+of these message components and traffic keys are computed. by 1 every time the key is reused.
+As the handshake proceeds, i and r compute a sequence of                     Relationship with IKpsk2. The secure channel protocol
+transcript hashes (H0 , H1 , . . . , H7 ) that hashes in all the public described above is a direct instantiation of Noise IKpsk2, with
+data used in the two handshake messages, including:                       five notable differences. First, WireGuard adds local session
+   • protocol_name, prologue: strings identifying the protocol,           identifiers (Ii , Ir ) for the initiator and responder. Second,
+        pub
+   • Ei       , Erpub : both ephemeral public keys,                       WireGuard fixes the payload of the first message to a timestamp,
+        pub       pub
+   • Sr , Si  : both static public keys, but with the initiator’s        and the one of the second message to the empty string. Third,
+      key in encrypted form,                                              WireGuard stipulates that the first traffic message is sent from
+   • ts , empty  : both encrypted handshake payloads, and               the initiator to the responder. Fourth, WireGuard excludes
+   • π: an identifier derived from the pre-shared key.                    zero Diffie-Hellman shared secrets to avoid points of small
+These transcript hashes serve as unique identifiers for the order, while Noise recommends not to perform this check.
+current stage of the session. In particular, no two completed Fifth, WireGuard adds two message authentication codes to the
+WireGuard sessions should have the same H7 .                              handshake messages, to provide stealth and to protect against
+   Both parties also derive a sequence of chaining keys DoS, as described in the next section. We also observe that
+(C0 , C1 , . . . , C7 ) by mixing in all the key material, including: although this protocol is superficially similar to other popular
+                               pub                                        Noise protocols like IK (which is used in WhatsApp), there
+   • protocol_name, Ei             , Erpub ,                              are important differences between these variants and a proof
+              priv
+   • dh(Ei          , Srpub ) = dh(Srpriv , Eipub ): the ephemeral-static for one does not translate to the other.
+      Diffie-Hellman shared secret computed using the initiator’s
+      ephemeral key (named first in ephemeral-static) and the B. Extensions for Stealth and Denial-of-Service
+      responder’s static key (named second in ephemeral-static),             A VPN protocol operates at a low-level in the networking
+              priv
+   • dh(Si         , Srpub ) = dh(Srpriv , Sipub ): the static-static stack and hence needs to not only protect against cryptographic
+      shared secret,                                                      attacks, but also real-world network-level attacks such as denial
+              priv
+   • dh(Ei          , Erpub ) = dh(Erpriv , Eipub ): the ephemeral- of service (DoS). Indeed, a cryptographic protocol like IKpsk2
+      ephemeral shared secret,                                            that needs to perform two expensive Diffie-Hellman operations
+              priv
+   • dh(Si         , Erpub ) = dh(Erpriv , Sipub ): the static-ephemeral before it can authenticate a handshake message is even more
+      shared secret, and                                                  vulnerable to DoS: an adversary can send bogus messages
+   • psk : the (optional) pre-shared key.
+                                                                          that tie up computing resources on the recipient. A further
+The function dh is the elliptic curve scalar multiplication, taking    security goal for WireGuard is that its VPN endpoints should
+a private key and a public key as argument, permitting the             be stealthy, in the sense that it should not be possible for a
+computation of a shared secret [16]. In the preceding list,            network adversary to blindly scan for WireGuard services.
+the initiator uses the first function call, and the responder the         To support stealthy operation, WireGuard endpoints do not
+second one, respectively.                                              respond to any handshake message unless the sender can prove
+   The protocol uses all four combinations of static and               that it knows the static public key of the recipient. This proof
+ephemeral Diffie-Hellman shared-secret computations to max-            is incorporated in the mac 1 field included in each handshake
+imally protect against the compromise of some of these                 message, which contains a message authentication code (MAC)
+keys. The psk also serves as a defensive countermeasure                computed over the prefix of the current handshake message up
+against quantum adversaries who may be able to break the               to but not including mac 1 , using a MAC key derived from the
+Diffie-Hellman construction, but not hkdf. Hence, by using a           recipient’s static public key. The recipient verifies this MAC
+frequently updated psk , WireGuard users can protect current           before processing the message, and stays silent if the MAC
+sessions against future quantum adversaries.                           fails. Hence, a network adversary who does not know the
+public key cannot detect whether WireGuard is running on a          • hkdf n : all key derivations use the HKDF construction [20],
+machine, and at the same time cannot force the recipient to            using BLAKE2s as the underlying hash function.
+perform two finally useless Diffie-Hellman operations.            The values labelmac1 and labelcookie are distinct constants.
+   To protect more actively against DoS, WireGuard incorpo-
+rates a cookie-based protocol (depicted in Figure 1c) that a host D. Security Goals, Informally
+can use when it is under load. For example, if the responder        Using the mechanisms described in this section, WireGuard
+suspects it is under a DoS attack, it can refuse to process the seeks to provide the following set of strong security guaran-
+first handshake message and instead send back an initiator- tees, inheriting the security claims of Noise IKpsk2 [7] and
+specific fresh cookie (τ ) that is computed from a frequently extending them with the additional DoS and stealth goals of
+rotated secret key (Rr ) (known only to the responder) and WireGuard [8]. In the following, we use honest to refer to a
+the initiator’s IP address (IPi ) and source port (Porti ). The party that follows the protocol specification, and dishonest to
+responder encrypts this cookie for the initiator, using a key a party that doesn’t, i.e. that is controlled by the adversary.
+derived from the initiator’s static public key, a fresh nonce, Most properties are defined to hold within a clean session; we
+and the mac 1 field of the first message as associated data.      define this notion formally in Section §V-A.
+   The initiator decrypts τ and then retries the handshake by       • Correctness: If an honest initiator and an honest respon-
+sending the first message again, but this time with a second           der complete a WireGuard handshake and the messages
+field mac 2 that contains a MAC over the full message up to and        are not altered by an adversary, then the transport data
+including mac 1 , using τ as the MAC key. After verifying this         keys (T → , T ← ) and the transcript hash H7 are the same
+MAC, the responder continues with the standard handshake.              on both hosts.
+   However, to obtain τ , an adversary must be able to read         • Secrecy: If a transport data message P is sent over a
+messages on the network path between the initiator and                 tunnel between two honest hosts, then this message is
+responder and must also know the initiator’s static key (which         kept confidential from the adversary. Furthermore, the
+is never sent in the clear by the protocol). And even if               traffic keys for this tunnel are also confidential.
+the adversary has both these capabilities, it is required to        • Forward Secrecy: Secrecy for a session holds even if
+perform session specific cryptographic computations for every          both the static private keys (Sipriv , Srpriv ) and the pre-
+handshake message it sends to the responder, significantly             shared key (psk ) become known to the adversary, but only
+limiting its ability to mount a DoS attack. Hence, this cookie         after the session has been completed and all its traffic
+protocol protects the recipient from brute-force network attacks.      keys and chaining keys are deleted by both parties.
+   Note that the mac 2 field is included in both handshake             Secrecy also holds even if the static and ephemeral keys
+messages, and hence can be used in both directions, to protect         are compromised (e.g. by a quantum adversary), as long
+both the initiator and responder from DoS attacks.                     as the pre-shared key is not compromised.
+   The two MACs are WireGuard-specific mechanisms which             • Mutual Authentication: If an honest initiator (resp.
+are not present in IKpsk2. Since they do not use any of the            responder) completed a handshake (ostensibly) with an
+session keys (or hashes or chaining keys) that are used in             honest peer, then that peer must have participated in this
+IKpsk2, adding these mechanisms should, in principle, not              handshake. Moreover, if a host A receives a plaintext
+affect the security of the secure channel protocol. However,           message over a WireGuard tunnel that claims to be from
+since the static public keys of the two hosts are used in the          host B, then B must have (intentionally) sent this message
+two MACs, we need to carefully study their impact on the               to A.
+identity-hiding guarantees of IKpsk2.                               • Resistance against Key Compromise Impersonation
+                                                                       (KCI): The recipient of a message can authenticate the
+C. Instantiating the Cryptographic Algorithms
+                                                                       message’s sender even if the recipient’s static key is
+   WireGuard uses a small set of cryptographic constructions           compromised.
+and instantiates them with modern algorithms, carefully chosen      • Resistance against Identity Mis-Binding: If two honest
+to provide strong security as well as high performance:                parties derive the same traffic keys in some WireGuard
+   • dh: all Diffie-Hellman operations use the Curve25519              session, then they agree on each other’s identities, even if
+      elliptic curve [16];                                             one or both of them have been interacting with a dishonest
+   • hash: the BLAKE2s hash function [17];                             party or an honest party with compromised keys. This
+   • aenc: authenticated encryption for handshake and traffic          property is also called resistance against unknown key-
+      message uses the AEAD scheme ChaCha20Poly1305 [18],              share attacks.
+      using the message counter as nonce;                           • Resistance against Replay: Any protocol message sent
+   • xaenc: cookie encryption uses an extended AEAD con-               may be accepted at most once by the recipient.
+      struction using XChaCha20Poly1305, which incorpo-             • Session Uniqueness: There is at most one honest initiator
+      rates a 192-bit random nonce [19] into the standard              session and at most one honest responder session for a
+      ChaCha20Poly1305 construction;                                   given traffic key. Similarly, there is at most one honest
+   • mac: all MAC operations use the keyed MAC variant of              initiator session and at most one honest responder session
+      the BLAKE2s hash function;                                       for given handshake messages.
+  •   Channel Binding: Two sessions that have the same final C. Curve25519 and Gap Diffie-Hellman
+      session transcript hash H7 share the same view and the           WireGuard uses the elliptic curve Curve25519 [16] for Diffie-
+      same session keys.                                            Hellman key exchanges. This curve is a group G of order kq
+   • Identity Hiding: Just by looking at the messages trans- where k = 8 (cofactor) and q is a large prime. The base point g
+      mitted over the network, a passive adversary cannot infer has prime order q; we denote by Gsub the prime order subgroup
+      the static keys involved in a session. (However, these generated by g. In WireGuard and typical implementations of
+      identities are not forward secret: If the responder’s static Curve25519 as specified by RFC 7748 [16], the incoming
+      key gets compromised, the adversary can later decrypt public keys are not verified, so they may be any element of
+      the initiator’s static public key that was transmitted in the G and may not belong to Gsub , and all exponents are non-
+      first message.)                                               zero multiples of k modulo kq. For each public key X in
+   • DoS Resistance: The adversary cannot have a message            G, there are k public keys Y in G such that X k = Y k and
+      accepted by a recipient under load without having first only one of these public keys is in Gsub . (We write point
+      made a round trip with that recipient. In practice, this multiplication exponentially.) We say that public keys X and
+      means that the adversary has to be at the claimed Y such that X k = Y k are equivalent, because they yield the
+      address. Because we assume that the adversary controls same Diffie-Hellman shared secrets: for any exponent z = kz 0 ,
+      the network, we cannot prove more than enforcing a round X z = X kz0 = Y kz0 = Y z . Moreover, the public keys may be
+      trip.                                                         0, the neutral element of G and Gsub , and 0x = 0 for all x.
+   The security goals above are stated in terms of completed           While most proofs of Diffie-Hellman key agreements assume
+WireGuard sessions, with most security guarantees only apply- a prime order group, that assumption is not correct for most
+ing after the third message, when both initiator and responder implementations of Curve25519. For instance, the identity mis-
+start freely sending and receiving data. In particular, the first binding issue that we discuss in Section VI would not appear
+transport data message (i.e. the third message) serves as key in a prime order group. Therefore, we need to provide a new
+confirmation to the responder, and is needed to prove that the model that takes into account the properties mentioned above.
+initiator has control over its ephemeral key. This is why, in          The main idea of our model is to rely on a Diffie-Hellman
+WireGuard, the responder does not send any data until it sees assumption in the prime order subgroup Gsub , and so to work
+this third message. In the rest of this paper, we investigate as much as possible with elements in Gsub . We rewrite the
+whether WireGuard achieves the goals set out above.                 computations in G into computations in Gsub by first raising the
+                                                                    public keys to the power k, and we rely on standard properties
+              III. C RYPTOGRAPHIC A SSUMPTIONS                      of prime order groups for Gsub .
+                                                                       In CryptoVerif, we first define the following types:
+   This section presents the assumptions that we make on
+the cryptographic primitives used by WireGuard. For most type G [bounded, large].
+primitives, the desired assumption is already present in the type Gsub [bounded, large].
+library of primitives of CryptoVerif, so we just need to call a type Z [bounded, large, nonuniform].
+macro to use that assumption. Still, we had to design a new The type G represents the group G; it is bounded because it is
+model for Curve25519, detailed below.                               represented by bitstrings of bounded length, and large because
+                                                                    collisions between randomly chosen elements in G have a
+A. Random Oracle Model                                              negligible probability. Similarly, the type Gsub represents the
+   We assume that BLAKE2s is a random oracle [21]. This group Gsub , and the type Z corresponds to non-zero integers
+assumption is justified in [22] using a weak ideal block cipher. multiple of k modulo kq. When honest participants choose
+                                                                    exponents, they are chosen uniformly in a subset of Z: they are
+                                                                    of the form 2254 +8n for n ∈ {0, . . . , 2251 −1} and kq > 2255 .
+B. IND-CPA and INT-CTXT for AEAD
+                                                                    Therefore, the distribution for choosing random exponents
+   We assume that the ChaCha20Poly1305 AEAD scheme [18] inside the whole Z is non-uniform, which is indicated by the
+is IND-CPA (indistinguishable under chosen plaintext attacks) annotation nonuniform.
+and INT-CTXT (ciphertext integrity) [23], provided the same            We define functions:
+nonce is never used twice with the same key. IND-CPA means
+                                                                    fun exp(G, Z) : G.
+that the adversary has a negligible probability of distinguishing
+                                                                    fun mult(Z, Z) : Z.
+encryptions of two distinct messages of the same length that it
+                                                                    equation builtin commut(mult).
+has chosen. INT-CTXT means that an adversary with access to
+encryption and decryption oracles has a negligible probability of We have exp(X, y) = X y , and mult is the product modulo
+forging a ciphertext that decrypts successfully and has not been kq, in Z. Since its two arguments are non-zero multiples of
+returned by the encryption oracle. These properties are justified k, so is its result, and it is in Z. The last line states that the
+in [24], assuming ChaCha20 is a PRF (pseudo-random function) function mult is commutative. (We could add associativity and
+and Poly1305 is an -almost-∆-universal hash function. The other properties, like existence of inverses, but commutativity
+latter property is shown to hold in [25].                           is typically sufficient to prove security of basic Diffie-Hellman
+key exchanges. More algebraic properties may be needed to              Other properties serve to simplify equalities between Diffie-
+prove group Diffie-Hellman protocols, for instance. Note that       Hellman values in Gsub , with the goal of showing that these
+not modelling these does not restrict the adversary in the          equalities are false. When the Diffie-Hellman shared secrets
+computational model.)                                               are passed to a random oracle, these equality tests appear
+                                                                    after using the random oracle assumption: we compare the
+fun pow _k (G) : Gsub .
+                                                                    arguments of each call to the random oracle with arguments
+fun exp_div _k (Gsub , Z) : Gsub .
+                                                                    of previous calls, to know whether the random oracle should
+fun Gsub 2G(Gsub ) : G [data].
+                                                                    return the result of a previous call.
+equation forall x : Gsub , x0 : Gsub ;
+  (pow _k (Gsub 2G(x)) = pow _k (Gsub 2G(x0 ))) = (x = x0 ).        equation forall X : Gsub , X 0 : Gsub , y : Z;
+                                                                                                                               (3)
+                                                                      (exp_div _k (X, y) = exp_div _k (X 0 , y)) = (X = X 0 ).
+We have pow _k (X) = X k , and it is in Gsub for all X in G.
+We have exp_div _k (X, y) = X y/k . This function operates on       equation forall X : Gsub , y : Z, z : Z;
+Gsub and is convenient since the exponents in Z are always            (exp_div _k (X, y) = exp_div _k (X, z)) =                 (4)
+multiples of k. The function Gsub 2G is the identity from Gsub        ((y = z) ∨ (X = zero sub )).
+to G; it is necessary to convert elements of type Gsub to type G.                R
+                                                                    collision x ← Z; forall X : Gsub , Y : Gsub ;
+The annotation data tells CryptoVerif that it is injective. The       return(exp_div _k (X, x) = Y ) ≈Pcoll1rand(Z)
+last equation says that pow _k is injective when restricted to                                                                  (5)
+                                                                         return((X = zero sub ) ∧ (Y = zero sub ))
+the subgroup Gsub , of order q. Indeed, k is prime to q, so it        if X independent-of x ∧ Y independent-of x.
+can be inverted modulo q.
+   We also define constants:                                        Equation (3) holds because y = ky 0 for some y 0 invertible
+                                                                    modulo q as shown above. In particular, using (1), injectivity
+const zero : G.             const zero sub : Gsub .                 of Gsub 2G, and (3), exp(X, y) = exp(X 0 , y) simplifies into
+equation zero = Gsub 2G(zero sub ).                                 pow _k (X) = pow _k (X 0 ). In contrast, in a prime order group,
+const g : G.                const g_k : Gsub .                      exp(X, y) = exp(X 0 , y) implies X = X 0 . This is the reason
+equation pow _k (g) = g_k . equation g_k 6= zero sub .              why, in the identity mis-binding issue of Section VI, we fail to
+The neutral element is zero as an element of G and zero sub         prove equality of the public keys X = X 0 and can only prove
+as an element of Gsub . The base point is g, and g_k = g k .        pow _k (X) = pow _k (X 0 ).
+  We also state equations that hold on these functions:                 Equation (4) holds because, when X ∈ Gsub is different
+                                                                                                                                0
+                                                                    from 0, X is a generator of Gsub , so all elements X y for
+equation forall X : G, y : Z;                                         0                                                 y/k
+                                                             (1)    y ∈ [1, q − 1] are distinct, hence all elements X       as well.
+  exp(X, y) = Gsub 2G(exp_div _k (pow _k (X), y)).
+                                                                        In the collision statement (5), Pcoll1rand(Z) is the prob-
+equation forall X : Gsub , y : Z, z : Z;                            ability that a randomly chosen element x in Z is equal to
+  exp_div _k (pow _k (Gsub 2G(exp_div _k (X, y))), z) = (2)         an element of Z independent of x. For Curve25519, since
+  exp_div _k (X, mult(y, z)).                                       random exponents are chosen uniformly among a set of 2251
+Equation (1) says that X y = (X k )y/k and Equation (2) that        elements, Pcoll1rand(Z) = 2−251 . Statement (5) means that
+((X y/k )k )z/k = X y.z/k . Equation (2) applies in particular      the probability of distinguishing exp_div _k (X, x) = Y from
+to simplify exp(exp(X, y), z) after applying (1): exp(exp(X,        (X = zero sub ) ∧ (Y = zero sub ) is at most Pcoll1rand(Z) as-
+                                                                                                             R
+y), z) = Gsub 2G(exp_div _k (pow _k (Gsub 2G(exp_div _k (           suming X is chosen randomly in Z (x ← Z) and X and Y are
+pow _k (X), y))), z)) = Gsub 2G(exp_div _k (pow _k (X),             independent of x. Indeed, suppose that exp_div _k (X, x) = Y
+mult(y, z))). These equations are used by CryptoVerif               differs from (X = zero sub ) ∧ (Y = zero sub ). If X = 0, then
+as rewrite rules, to rewrite the left-hand side into the            X x/k = 0, so both expressions reduce to Y = 0, so they
+right-hand side. They allow rewriting computations in the           cannot differ. Therefore, X 6= 0. The second expression is
+group G into computations that happen in the subgroup               then false. Moreover, X is a generator of Gsub , so Y = X y
+Gsub , after raising the public key to the power k. In              for some y independent of x. The equality X x/k = Y = X y
+particular, exp(g, y) = Gsub 2G(exp_div _k (g_k , y)) and           holds if and only if x/k = y mod q so x = ky mod kq
+exp(exp(g, y), z) = Gsub 2G(exp_div _k (g_k , mult(y, z))).         with ky independent of x, so this happens with probability
+   The next equation allows CryptoVerif to simplify equality        Pcoll1rand(Z). So the first expression is true with probability
+tests with the neutral element, which are used by some              Pcoll1rand(Z), and the two expressions differ with that prob-
+protocols, including WireGuard, to exclude that element from        ability. The support for side-conditions in collision statements
+the allowed public keys.                                            is an extension of CryptoVerif that we implemented.
+                                                                        Our model includes a few other properties, detailed and
+equation forall X : Gsub , y : Z;
+                                                                    justified in the long version of the paper. In particular, it
+  (exp_div _k (X, y) = zero sub ) = (X = zero sub ).
+                                                                    includes properties for simplifying equalities between products
+When y ∈ Z, y = ky 0 for some y 0 not multiple of q, so y 0         in Z. Such equalities appear for instance after simplification
+is invertible modulo q. Therefore, X y/k = 0 if and only if         of equalities exp_div _k (g_k , mult(x, y)) = exp_div _k (g_k ,
+    0                      0    0       0
+X y = 0 if and only if (X y )1/y = 01/y , that is, X = 0.           mult(x0 , y 0 )). For instance, we model that mult(x, y) =
+mult(x, y 0 ) if and only if y = y 0 and that, when x is chosen We show, using the indifferentiability lemmas of this section,
+randomly in Z and y and z are independent of x, we have that hkdf n is indifferentiable from a random oracle, and that
+mult(x, y) = z with probability at most Pcoll1rand(Z).             the chain above is indifferentiable from:
+   This model is included as a macro in CryptoVerif’s library           k1                    ← chain01 (v0 , v1 )
+of cryptographic primitives, so that it can easily be reused. It
+also applies to other curves that have a similar structure, for         k2                    ← chain02 (v0 , v1 , v2 )                    (6)
+                                                                                →     ←               0
+instance Curve448, which is also used by the Noise framework,           πkk3 kT kT            ← chain6 (v0 , v1 , v2 , v3 , v4 , v5 , v6 )
+and by other protocols like TLS 1.3.                               Thus, we obtain a much simpler computation, which we use
+   We assume that the prime order subgroup Gsub satisfies the in our CryptoVerif model of WireGuard. Previous analyses
+gap Diffie-Hellman (GDH) assumption [26]. This assumption of WireGuard did not use such a result because they do not
+means that given a generator g, g a , and g b for random a, b, the rely on the random oracle model: [12] relies on the PRF-ODH
+adversary has a negligible probability to compute g ab , even assumption, [11] uses the symbolic model.
+when the adversary has access to a decisional Diffie-Hellman
+oracle, which tells him given G, X, Y, Z whether there exist A. Definition of Indifferentiability
+x, y such that X = Gx , Y = Gy , and Z = Gxy . It was already         Indifferentiability can be defined as follows. This definition
+modelled in CryptoVerif.                                           is an extension of [28] to several independent oracles. We give
+   In contrast, in their cryptographic proof of WireGuard, an asymptotic definition here. In the long version, we give
+Dowling and Paterson [12] use the PRF-ODH assumption. We explicit probabilities and proofs for all results.
+use the GDH and random oracle assumptions instead because Definition 1 (Indifferentiability). Functions (F )
+                                                                                                                             i 1≤i≤n with
+CryptoVerif cannot currently use the PRF-ODH assumption in oracle access to independent random oracles (H )
+                                                                                                                              j 1≤j≤m are
+scenarios with key compromise. While in principle the PRF- indifferentiable from independent random oracles (H 0 )
+                                                                                                                                     i 1≤i≤n
+ODH assumption is weaker, Brendel et al. [27] show that it is if for each value of the security parameter η, there exists
+implausible to instantiate the PRF-ODH assumption without a a simulator S that runs in time P (η) such that for any
+                                                                                                             1
+random oracle, so our assumptions and the one of [12] are in distinguisher D that runs in time P (η),
+                                                                                                          2
+fact fairly similar.                                                                                              0
+                                                                   | Pr[D(Fi )1≤i≤n ,(Hj )1≤j≤m = 1]−Pr[D(Hi )1≤i≤n ,S = 1]| ≤ f (η)
+
+        IV. I NDIFFERENTIABILITY OF H ASH C HAINS                       where P1 and P2 are polynomials and f is a negligible function.
+                                                                        The simulator S has oracle access to (Hi0 )1≤i≤n .
+   Before modelling WireGuard, we first present a different,          In the game G0 = D(Fi )1≤i≤n ,(Hj )1≤j≤m , the distinguisher
+equally precise, formulation of hash chains that is more interacts with the real functions Fi and the random oracles
+amenable to a mechanised proof in CryptoVerif. Indeed, Hj from which the functions Fi are defined. In the game
+                                                                               0
+WireGuard makes many hash oracle calls to BLAKE2s, and G1 = D(Hi )1≤i≤n ,S , the distinguisher interacts with indepen-
+at each call to a random oracle, CryptoVerif tests whether dent random oracles Hi0 instead of Fi , and with a simulator S,
+the arguments are the same as in any other previous random which simulates the behaviour of the random oracles Hj using
+oracle call (to return the previous result of the random oracle). calls to Hi0 . Indifferentiability means that these two games are
+Therefore, using directly BLAKE2s as a random oracle would indistinguishable. We assume that the output length of each
+introduce a very large number of cases and yield exaggeratedly random oracle depends only on the security parameter.
+large cryptographic games. In order to avoid that, we simplify
+                                                                    B. Basic Lemmas
+the random oracle calls using indifferentiability lemmas. These
+lemmas are not specific to WireGuard and can be used to               In this section, we show several basic indifferentiability
+simplify sequences of random oracle calls in other protocols,       lemmas,  which are not specific to WireGuard.
+including other Noise protocols and Signal [6]. In the future, Lemma 1 ([29, Lemma 2]). If H is a random oracle, then
+these lemmas may serve as a basis for an indifferentiability the functions H1 , . . . , Hn defined as H on disjoint subsets
+prover inside CryptoVerif, which would simplify random oracle D1 , . . . , Dn of the domain D of H are indifferentiable from
+calls before proving the protocol.                                  independent random oracles, assuming one can determine in
+   Specifically, WireGuard uses HKDF in a chain of calls to polynomial time to which subset Di an element belongs.
+derive symmetric keys at different stages of the protocol:
+                                                                    Lemma 2. The concatenation of two independent random
+                                                                    oracles with the same domain is indifferentiable from a random
+ C0        ← const                C5            ← hkdf 1 (C4 , v4 ) oracle.
+ C1        ← hkdf 1 (C0 , v0 )    C6            ← hkdf 1 (C5 , v5 )
+                                                                    Lemma 3 ([29, Lemma 3]). The truncation of a random oracle
+ C2 kk1 ← hkdf 2 (C1 , v1 )       C7 kπkk3 ← hkdf 3 (C6 , v6 ) is indifferentiable from a random oracle.
+ C3 kk2 ← hkdf 2 (C2 , v2 )       T → kT ← ← hkdf 2 (C7 , v7 )
+                                                                      Lemmas 4 and 5 deal with the composition of two ran-
+ C4        ← hkdf 1 (C3 , v3 )                                      dom oracle calls in sequence; they have been proved using
+CryptoVerif. We extended CryptoVerif to be able to prove             Definition 2 (Chain). Let m ≥ 1 be a fixed integer, let C and
+indistinguishability between two games given by the user. With       Cj with 0 ≤ j ≤ m + 1 be bitstrings of length l0 , let vj with
+this extension, CryptoVerif shows the indistinguishability result    0 ≤ j ≤ m be bitstrings of arbitrary length, let l be the
+between the games G0 and G1 described in Section IV-A,               length of the output of H(Cj , vj ), and let rj with 0 ≤ j ≤ m
+which implies the indifferentiability result.                        be bitstrings of length (l − l0 ). (l and l0 are functions of the
+                                                                     security parameter.) We define the functions chainn , 0 ≤ n < m
+Lemma 4. If H1 : S1 → S10 and H2 : S10 × S2 → S20 are
+                                                                     and the function chainm in the following way:
+independent random oracles, then H3 defined by H3 (x, y) =
+H2 (H1 (x), y) is indifferentiable from a random oracle.                         chainn (v0 , . . . , vn ) =
+                                                                                   C0 = const
+Lemma 5. If H1 : S1 → S10 and H2 : S10 × S1 → S20 are                              for j = 0 to n do Cj+1 krj = H(Cj , vj )
+                                                                                                                                               (7)
+independent random oracles, then H10 = H1 and H20 defined by
+                                                                                   return rn
+H20 (x) = H2 (H1 (x), x) are indifferentiable from independent
+random oracles.                                                                  chainm (v0 , . . . , vm ) =
+                                                                                   C0 = const
+C. Indifferentiability of HKDF                                                                                                                 (8)
+                                                                                   for j = 0 to m do Cj+1 krj = H(Cj , vj )
+  The hkdf key derivation function is defined as follows [20]:                     return Cm+1 krm
+     hkdf n (salt, key, info) = k1 k . . . kkn where                 The functions chainn , n < m, have an output of length (l − l0 ),
+        prk = hmac(salt, key)                                        and the output length of chainm is l.
+        k1 = hmac(prk , infoki0 )                                    Lemma 7. If H is a random oracle, then chainn , for n ≤ m,
+        ki+1 = hmac(prk , ki kinfoki + i0 ) for 1 ≤ i < n            are indifferentiable from independent random oracles.
+where n ≤ 255, and i0 = 0x01 and i are of size 1 byte. In              We could probably prove this lemma for small values of
+WireGuard, info is always empty, so we omit it in Section II.        m using CryptoVerif, but the generic result requires a manual
+   We suppose that hmac is a random oracle, and we show              proof because CryptoVerif does not support loops.
+that hkdf n is indifferentiable from a random oracle, with           E. Application to WireGuard
+the additional assumption that the calls to hmac use disjoint
+domains. (We show that this assumption is necessary and give            WireGuard employs BLAKE2s [30] both directly as the
+a full proof of the result in the long version of the paper [15].)   function hash and indirectly as hash function in hmac and
+Let S, K, and I be the sets of possible values of salt, key,         thus also in hkdf. The domains of these two uses are disjoint
+and info respectively, and M the output of hmac.                     in WireGuard, as shown by an easy inspection of the length
+                                                                     of the arguments. Then by Lemma 1, we can consider two
+Sn−1 6. If hmac is a random oracle and K ∩ (Iki0 ∪
+Lemma                                                                independent random oracles, hash for the direct uses and hash0
+  i=1 MkIki + i0 ) = ∅ then hkdf n with domain S × K × I             for the uses via hkdf. Since hash is a random oracle, it is a
+is indifferentiable from a random oracle.                            fortiori collision-resistant. We use that assumption for hash in
+  This result extends the proof given for hkdf 2 in [29,             our CryptoVerif proof.
+                                                                        Since hash0 is a random oracle, hmac-hash0 is indiffer-
+Lemma 1]. Moreover, our proof is modular and partly made
+                                                                     entiable from a random oracle by [31, Theorem 3]. Using
+using CryptoVerif, thanks to the basic lemmas of Section IV-B.
+                                                                     Lemma 6, hkdf n is indifferentiable from a random oracle.
+Proof sketch. Since the domains are disjoint, by Lemma 1, the        Since Lemma 7 assumes a chain of calls to the same hkdf n
+(n + 1) calls to hmac are indifferentiable from independent          function, we rewrite the chain of hkdf calls in WireGuard to
+random oracles H0 , . . . , Hn . The constant i + i0 can be          use only calls to hkdf 3 , as 3 is the maximum number of outputs
+removed from the arguments of Hi+1 since it is fixed for             needed, and discard the unused suffix: by definition of hkdf n ,
+a given Hi+1 . By Lemma 5, the computation of k2 =                   this yields the same result. By Lemma 7, this computation can
+H2 (H1 (prk , info), prk , info) is indifferentiable from a random   be replaced with:
+oracle k2 = H20 (prk , info). Applying this reasoning n times,
+                                                                         k1 k_             ← chain1 (v0 , v1 )
+the computation of ki for 1 ≤ i ≤ n is indifferentiable from
+independent random oracles ki = Hi0 (prk , info). By Lemma 2,            k2 k_             ← chain2 (v0 , v1 , v2 )
+concatenation of Hi0 for 1 ≤ i ≤ n is indifferentiable from a            πkk3              ← chain6 (v0 , v1 , v2 , v3 , v4 , v5 , v6 )
+random oracle H, so hkdf n (salt, key, info) = k1 k . . . kkn =            →
+                                                                         T kT k_  ←
+                                                                                           ← chain7 (v0 , v1 , v2 , v3 , v4 , v5 , v6 , v7 )
+H(prk , info), where prk = H0 (salt, key). By Lemma 4,
+we conclude that hkdf n is indifferentiable from a random            where k concatenates blocks of length the output length
+oracle.                                                              of hmac, _ is an unnamed block, and chaini for i ≤ 7
+                                                                     are independent random oracles. (The result of chaini for
+D. Indifferentiability of a Chain of Random Oracle Calls             i = 0, 3, 4, 5 is not used.) The output of the random oracles
+  In this section, we prove the indifferentiability of a chain of    can be truncated by Lemma 3 to avoid having to discard parts
+random oracle calls defined as follows.                              of the output. Moreover, in WireGuard, v7 = empty, so T →
+and T ← only depend on v0 , . . . , v6 , as do π and k3 in the      we consider all combinations of compromises but those where
+previous line. By Lemma 2, we concatenate chain6 (. . . ) and       both keys on one side are compromised, that is:
+chain7 (. . . , empty), and thus obtain (6). The long version of       1) A and B’s private static keys may be dynamically
+the paper details this proof.                                             compromised;
+                V. M ODELLING W IRE G UARD                             2) A’s private static key may be dynamically compromised
+                                                                          and B’s private ephemeral key is compromised (by
+   This section presents our model of the WireGuard protocol              sending it to the adversary as soon as it is chosen);
+in CryptoVerif. We prove security properties for that model in         3) B’s private static key may be dynamically compromised
+Section VI.                                                               and A’s private ephemeral key is compromised;
+A. Execution Environment                                               4) A and B’s private ephemeral keys are compromised.
+   In our model, we consider two honest entities A and B. In We prove most security properties for clean sessions, that
+the initial setup, we generate the static key pairs for these two is, intuitively, sessions between honest entities; cleanliness
+entities and publish their public keys, so that the adversary is the minimal assumption needed to hope for security. A
+can use them. After this setup, we run parallel processes that session of A is clean when either B’s private static key is not
+represent a number of executions of A and B polynomial in compromised yet and A’s partner public key is equivalent to
+the security parameter.                                             B’s static public key, or B’s private static key is compromised
+   The entities A and B can play both the initiator and and the public ephemeral key received by A is equivalent to
+responder role. These two entities can run WireGuard between a non-compromised ephemeral generated by B. B’s session
+each other, but also with any number of dishonest entities cleanliness is defined symmetrically. Intuitively, when B’s
+included in the adversary: for each session, the adversary sends private static key is not compromised, A can rely on that
+to the initiator its partner public key, that is, the public key of key to authenticate B, so A thinks she talks to B when she
+the entity with which it should start a session; the adversary runs a session with B’s public key. We consider a public key
+sends to the responder the set of partner public keys that it equivalent to B’s public key rather than equal to B’s public
+accepts messages from.                                              key to strengthen the properties: the authentication property
+   This setting allows us to prove security for any sessions shown in Section VI then implies that when A successfully
+between two honest entities, in a system that may contain runs a session with a partner public key equivalent to B’s
+any number of (honest or dishonest) other entities. We prove public key, then these two keys are in fact equal. (We find
+security for sessions in which A is the initiator and B is the an interesting scenario concerning equivalent public keys and
+responder. We do not explicitly prove security for sessions in identity mis-binding with variant 3 of our model, we discuss
+which B is the initiator and A is the responder, but the same it in §VI.) When B’s private static key is compromised, A
+security properties hold by symmetry.                               cannot authenticate B, but we can still prove security when
+   The processes for the entities A and B model the entire the ephemeral key received by A has been generated by B.
+protocol, including the first two protocol messages, the key Like for static keys, when A successfully runs a session with
+confirmation message from the initiator, and then a number of a received ephemeral equivalent to an ephemeral generated by
+transport data messages polynomial in the security parameter, B, then these two ephemerals are in fact equal. (Instead of
+in both directions between initiator and responder. The model considering compromised ephemeral keys, we could also have
+also includes random oracles, and we allow the adversary to modelled dishonestly generated ephemeral keys. We expect
+call any of the random oracles that we use.                         that some properties shown in §VI, such as session uniqueness,
+   We consider 3 variants of this model:                            would   not hold in this case.)
+   Variant 1. This variant does not rely at all on the pre-shared      Variant   2. This variant relies exclusively on the pre-shared
+key for proving security, so A and B receive a pre-shared key       key  for security. In that variant, we consider all private static
+chosen by the adversary at the beginning of each execution.         and  ephemeral    keys   as always compromised. We choose a
+That allows the adversary to model both the absence of a            pre-shared   key randomly    in the initial setup, and run sessions
+pre-shared key (by choosing the value 0) or a compromised           between   A  and  B  with  that pre-shared key. In this model, A’s
+pre-shared key of its choice.                                       partner  public key  is always  B’s public key and symmetrically,
+   We model the dynamic compromise of the private static            and  these  sessions   between   A and B are always considered
+key of A (resp. B) by a process that the adversary can call at      clean. The   adversary  can  run  A’s and B’s sessions with other
+any time and that returns the private key of A (resp. B) and        entities since  A  and  B’s  private static keys are compromised
+records the compromise by defining a particular variable, so        and  these  sessions  use a  different pre-shared key.
+that it can be tested in the security properties that we consider.     Variant 3. In this variant, all keys are compromised: all
+   In WireGuard, four Diffie-Hellman operations and the pre- private static and ephemeral keys are always compromised and
+shared key contribute to the session keys. If the pre-shared the pre-shared key is chosen by the adversary for each session.
+key is not used or compromised, security is based on the four This model is useful for proving properties that do not rely
+Diffie-Hellman operations. If one of them cannot be computed on session cleanliness, that is, properties that hold even for
+by the adversary, then the session keys are secret. Therefore, sessions involving dishonest participants.
+With this model, we analyse the whole WireGuard protocol reintroduce the MACs in a separate model that we use for
+as it is, tying together the authenticated key exchange and proving resistance against DoS.
+the transport data phase. A similar approach was chosen by            Importantly, these modelling tricks increase the power of
+the creators of the Authenticated and Confidential Channel the adversary: the implementation done in WireGuard is a
+Establishment (ACCE) [32] model to analyse TLS. Instead of particular case of what the adversary can do in our model, in
+reasoning about key indistinguishability, ACCE looks at the which the adversary chooses the current time as timestamp,
+security of the messages exchanged encrypted using the key. increases the counter for sending messages at each emission,
+We do the same, for the key confirmation and all subsequent accepts incoming counters in a sliding window, and computes
+transport data messages.                                           and verifies mac 1 and mac 2 by itself. As a result, a security
+   In ACCE, the adversary has to choose one clean test session proof in our model remains valid in WireGuard.
+in which it tries to break security by determining the secret
+                                                                                    VI. V ERIFICATION R ESULTS
+bit. In all other sessions, it is allowed to reveal the session
+keys. In our model, all clean sessions are test sessions, and we      In order   to prove authentication properties, we insert
+explicitly reveal the session keys in sessions that are not clean. events  in our  model, to indicate when each message is sent
+                                                                   or received by the protocol. Specifically, we insert events
+                                                                   sent1, sent2, sent_msg_initiator, and sent_msg_responder
+B. Modelling Tricks
+                                                                   just before sending message 1, message 2, and transport
+   Apart from the HKDF chains where we prove that the way messages on the initiator and responder sides respectively, and
+we model them is indifferentiable from the real protocol in corresponding events rcvd1, rcvd2, rcvd_msg_responder, and
+Section IV, we use the following modelling tricks:                 rcvd_msg_initiator when these messages have been received
+   Timestamps. CryptoVerif has no support for time, so instead and successfully decrypted. The event rcvd2 and the events for
+of generating the timestamp, we input it from the adversary. transport messages are executed only in clean sessions.
+In other words, we delegate the task of timestamp generation          Mutual key and message authentication, resistance
+to the adversary. In order to model replay protection for the      against  KCI, resistance against replay from message 2. We
+first message, the responder stores a global table (that is, a     show  authentication for all messages starting from the second
+list) of triples containing the received timestamp, the partner    protocol   message, by  proving the following correspondence
+public key for that session, as well as its own public key. properties between events, in the first two variants of our
+(This is equivalent to having a distinct table of timestamps CryptoVerif model of Section V-A:
+and partner public keys for each responder, represented by its            inj-event(rcvd2(Srpub , Eipub , Sipub , Sipub , ts  , ts,
+                                                                                                             
+public key.) The responder rejects the first message when the
+triple (received timestamp, partner public key, and responder                              Erpub , empty  , T → , T ← ))
+public key) is already in the table.                                   ⇒ inj-event(sent2(Srpub , Eipub , Sipub 
+                                                                                                                  , Sipub , ts  , ts,
+   Nonces for the AEAD scheme. The nonces in WireGuard                                     Erpub , empty  , T → , T ← )) ,
+are computed by incrementing a counter. CryptoVerif has no
+support for that, so we receive the desired value of the counter          inj-event(rcvd_msg_responder(
+from the adversary. We guarantee that the same counter is                              Srpub , Eipub , Sipub , Sipub , ts  , ts,
+                                                                                                          
+never used twice in the same session for sending messages by
+storing all counters used for sending messages in a table of                           Erpub , empty  , T → , T ← , N → , P  , P ))
+pairs (session index, counter), where the session index identifies     ⇒ inj-event(sent_msg_initiator(
+the session uniquely: it indicates whether A or B is running,                          Srpub , Eipub , Sipub , Sipub , ts  , ts,
+                                                                                                          
+as initiator or as responder, and contains a unique integer index
+                                                                                       Erpub , empty  , T → , T ← , N → , P  , P )) ,
+for the execution of that entity in that role. This is equivalent
+to having a distinct table of counters for each session. The We also prove a third query (similar to the second one
+message is not sent when the adversary provides a counter that above) for transport data messages in the other direction, with
+is already in the table. We guarantee that the same counter events rcvd_msg_initiator and sent_msg_responder. A proven
+is never used twice for receiving messages in the same way, correspondence between two injective events (inj-event) means
+using a separate table.                                            that each execution of the left-hand event corresponds to a
+   MACs. We omit the MACs mac 1 and mac 2 in our model. distinct execution of the right-hand event.
+This simplifies the proof but preserves its soundness, since they    The first query means that, if the initiator session is clean
+can be computed and verified by the adversary: we deliver the and the initiator has received the second message, then the
+messages without MACs to the adversary, and the adversary responder sent it, and initiator and responder agree on their
+can add the MACs; conversely, the adversary can remove the static and ephemeral public keys, session keys, timestamp, and
+MACs before delivering messages to the protocol model. We communicated ciphertexts. This authenticates the responder to
+let the adversary choose the key Rr that the responder uses the initiator.
+for computing cookies. All other elements needed to compute          The second and third queries mean that, if the receiver
+the MACs are public: constants and static public keys. We session is clean and the receiver received a transport packet,
+then a sender sent that transport packet, and the receiver Hence, we get the desired forward secrecy property: we have
+and the sender agree on their static and ephemeral public message secrecy when the pre-shared key is compromised after
+keys, session keys, timestamp, sent plaintext, message counter, the session, and neither both Sipriv and Eipriv nor both Srpriv
+and communicated ciphertexts. In particular, for the key and Erpriv are compromised.
+confirmation message, this authenticates the initiator to the            We cannot prove key secrecy for the session keys in the full
+responder. These queries also provide message authentication protocol, because the session keys are used for encrypting
+for the transport data messages.                                      transport data messages, and this allows an adversary to
+   All these properties hold when the pre-shared key is not distinguish them from fresh random keys. Instead, we prove
+compromised (variant 2 of Section V-A). They also hold key secrecy for a model in which all transport data messages,
+when neither both Sipriv and Eipriv nor both Srpriv and Erpriv including key confirmation, are removed. To prove this result,
+are compromised and the receiver session is clean; this is we need to strengthen the session cleanliness condition. Indeed,
+true, in particular, when the sender’s static private key is not the first message is subject to a KCI attack, as mentioned
+compromised yet (variant 1 of Section V-A).                           above. Therefore, when the private static key of the responder
+   The above queries include resistance against replays because is compromised, we additionally require that the ephemeral
+the correspondences are injective: each reception corresponds received by the responder is equivalent to one generated by
+to a distinct emission. They also include resistance against KCI the initiator. With this stronger cleanliness condition, we show
+attacks because the rcvd∗ events are issued even if the receiver’s that the session keys are secret, that is, the keys for various
+static key has already been compromised: the receiver session clean sessions are indistinguishable from independent random
+is still clean in this case. Note that, for the responder, resistance keys. We do not need this stronger cleanliness condition when
+against KCI attacks only starts after it receives the first data we study the full protocol, since the key confirmation message
+transport message. Indeed, the first protocol message is subject protects the responder against KCI attacks.
+to a KCI attack: if the private static key of the responder (Srpriv )
+is compromised, then the adversary can forge the first message           Resistance against replay for the first message. We prove
+and impersonate the initiator to the responder.                       that  the first message cannot be replayed but only if no
+   Secrecy and forward secrecy. We show secrecy of transport          static key is compromised when it is received. If Sipriv were
+data messages in clean sessions by a left-or-right message compromised, the adversary can impersonate the initiator as the
+                                                                                                  priv
+indistinguishability game. In the initial setup, we randomly sender of this message. If Sr is compromised, we have a KCI
+choose a secret bit. For each transport data message in a clean attack, as described above. So we prove the following injective
+session, the adversary provides two padded plaintexts of the correspondence in a model where the static keys cannot be
+same length, and we encrypt one of them depending on the compromised but the ephemeral keys may be compromised,
+value of that bit. CryptoVerif proves the secrecy of that bit, in so we rely on the static-static Diffie-Hellman shared secret:
+variants 1 and 2 of Section V-A, showing that the adversary
+cannot determine which of the two plaintexts was encrypted.
+   The secrecy query includes forward secrecy, because we                   inj-event(rcvd1(true, Srpub , Eipub , Sipub
+                                                                                                                     
+                                                                                                                        , Sipub , ts , ts))
+allow dynamic compromise of static keys after the session               ⇒ inj-event(sent1(       Srpub , Eipub , Sipub , Sipub , ts , ts)) .
+                                                                                                                    
+keys have been established, if the ephemeral key of the same
+party is not compromised. This assumes that the parties delete
+the sessions’ ephemeral and chaining keys after key derivation.
+   In variant 2 of our model, the query also shows secrecy The first parameter of rcvd1 is true if the public static key
+provided the pre-shared key is not compromised, even if all received by the responder with the first message is the public
+other keys (static and ephemeral) are compromised. Our models static key of the honest initiator: we prove this property only for
+do not consider the dynamic compromise of the pre-shared key, sessions between honest peers. Replay protection is guaranteed
+due to a limitation of CryptoVerif. We can still obtain forward by each timestamp being accepted only once. With this check
+secrecy with respect to the compromise of the pre-shared key removed, the first message can be replayed, but we still prove a
+using the following manual argument. As mentioned above, non-injective correspondence between the two events, replacing
+variant 2 of our model shows authentication when the pre- inj-event by event in the query. This is a weaker property,
+shared key is not compromised (all other keys are compromised meaning that, if an event rcvd1 has been executed, then at least
+in this model). This authentication property is preserved when one event sent1 with matching parameters has been executed
+the pre-shared key is compromised after the rcvd∗ event, before. Thus, even with the replay protection removed, we can
+because the later compromise cannot alter the fact that the prove that the origin of the first message cannot be forged in
+sent∗ event has been executed. Furthermore, authentication a model without static key compromise.
+guarantees that the ephemeral public key received by the                 Correctness. Correctness means that, if the adversary does
+initiator was generated by the responder and conversely. not modify the first two messages, then the initiator and
+Variant 1 of our model then guarantees secrecy in this case, responder share the same session keys and transcript hash
+because the session is clean when the ephemeral received by H7 . Actually, it suffices that the adversary does not modify
+the initiator was generated by the responder and conversely. the ephemerals and ciphertexts of the first two messages. We
+prove it with the following query:                                 the ephemeral and static keys used in that session. This is
+                                                                   formalised by the following query:
+event(responder_corr(Eipub , Sipub
+                                
+                                   , ts  , Erpub , empty  ,
+                                                                                                    pub               pub
+  Tr→ , Tr← , Hr7 ))                                               event(responder_imb(T → , T ← , Ei,rcvd , Erpub , Si,rcvd , Srpub ))
+
+∧ event(initiator_corr(Eipub , Sipub , ts  , Erpub , empty  ,
+                                                                                                              pub
+                                                                   ∧ event(initiator_imb(T → , T ← , Eipub , Er,rcvd            pub
+                                                                                                                     , Sipub , Sr,rcvd ))
+                                  
+
+  Ti→ , Ti← , Hi7 )) ⇒ Ti→ = Tr→ ∧ Ti← = Tr← ∧ Hi7 = Hr7 .
+                                                                              pub
+                                                                   ⇒ Eipub = Ei,rcvd            pub
+                                                                                     ∧ Erpub = Er,rcvd
+                                                                               pub
+                                                                    ∧ Sipub = Si,rcvd            pub
+                                                                                      ∧ Srpub = Sr,rcvd .
+The events initiator_∗ and responder_∗ used in this query and
+in the following ones are issued after key derivation, in the      CryptoVerif proves it in variant 1 of our model, so it holds
+initiator and responder respectively. Here, the two events given   when neither both Sipriv and Eipriv nor both Srpriv and
+as assumptions guarantee that the adversary did not modify the     Erpriv are compromised. However, the proof fails when all
+ephemerals and ciphertexts of the first two messages, and the      static and ephemeral keys are compromised (variant 3 of
+query concludes that the session keys and transcript hash must     our model):CryptoVerif
+                                                                                                can prove
+                                                                                                                the weaker property
+                                                                                                              only
+be equal. However, in our main models, CryptoVerif is currently    that pow _k Sipub = pow _k Si,rcvd     pub
+                                                                                                                  and pow _k Srpub =
+                                                                                                                                     
+unable to prove that the ciphertexts have not been created by               
+                                                                                pub
+                                                                                     
+the adversary, although this is true in the sessions considered    pow _k Sr,rcvd      . An adversary can indeed break the equality
+by the correctness query. Thus, we created a separate model to     of public static keys in this case:
+prove correctness, in which the assumption is hard-coded by           • The adversary instructs A to initiate a session to a public
+interleaving the initiator and responder in a single sequential          static key Srpub 0 equivalent to our model’s honest respon-
+process. In this model, we prove correctness even if all keys            der public static key: pow _k (Srpub ) = pow _k (Srpub 0 )
+are compromised.                                                         but Srpub 6= Srpub 0 . This is possible because Srpriv is
+   Session Uniqueness. First, we prove that there is a single            compromised. In this session, the adversary acts as
+initiator and a single responder session with a given T → or             responder, and because the ephemeral is also compromised,
+T ← . The query below shows that there cannot be two distinct            gets A’s Eipriv .
+initiator sessions with the same T → :                                • The adversary now acts as initiator to start a session with
+                                                                         B using a public static key Sipub 0 equivalent to the honest
+          event(initiator_uniq_T→ (ii , T → ))
+                                                                         initiator public static key: pow _k (Sipub ) = pow _k (Sipub 0 )
+       ∧ event(initiator_uniq_T→ (i0i , T → )) ⇒ ii = i0i ,              but Sipub 6= Sipub 0 . This is possible because Sipriv is
+                                                                         compromised. The adversary uses Eipriv as ephemeral.
+where ii , i0i are replication indices: CryptoVerif assigns each
+                                                                         The ephemeral of this session is also compromised, so
+execution of the initiator (or responder) process a unique
+                                                                         the adversary gets Erpriv .
+replication index, so the query means that if we execute two
+                                                                      • The adversary continues the session with A using the
+events initiator_uniq_T→ with the same T → , then they have
+                                                                         ephemeral Erpriv .
+the same replication index ii = i0i , hence they belong to the
+same session. This query is proved in variant 3 of Section V-A,    If a pre-shared key is used, we assume that the adversary
+so the property holds even if all keys are compromised. (It        has the same pre-shared key with A (presenting itself with
+relies on the choice of a fresh ephemeral at each session.) The    key Srpub 0 ) and with B (presenting itself with Sipub 0 ). The
+queries for the other cases are similar.                           session keys T → and T ← for these two sessions are computed
+   Second, we show similarly that there is a single initiator      as hashes of Eipub , dh(Eipriv , Srpub ), dh(Sipriv , Srpub ), Erpub ,
+and a single responder session for a given set of publicly         dh(Eipriv , Erpub ), dh(Sipriv , Erpub ), and psk . They are the same
+transmitted protocol values.                                       in both sessions, so the session keys are also the same.
+   Channel Binding. We prove channel binding with the query:          This scenario, with a session between A and B 0 and one
+                                                                   between B and A0 that share the same session keys, is an
+  event(initiator_H7(params, H7 ))                                 instance of a bilateral unknown key-share attack [33] and of
+∧ event(responder_H7(params 0 , H7 )) ⇒ params = params 0          a key synchronisation attack [5]. It appears only when all
+                                                                   static and ephemeral Diffie-Hellman keys are compromised,
+This query shows that if the initiator and responder have          and hence should be considered a corner-case. However, we
+the same value of the session transcript H7 , then they share      note that this scenario does not require the psk shared by A
+the same value of all session parameters params (static and        and B to be compromised, since this psk does not get used in
+ephemeral public keys, timestamp, pre-shared key, session          the execution above. We suggest a possible fix of this identity
+keys). This query is also proved in variant 3 of Section V-A,      mis-binding issue in Section VII.
+so the property holds even if all keys are compromised. (It           Resistance against DoS. As described in Section II, Wire-
+relies on the collision resistance of hash.)                       Guard provides a cookie mechanism that a peer under load
+   Identity Mis-Binding. For this property, we need to show        can use to enforce a round trip per sender address, and thus to
+that if an initiator and a responder session share the same        bind a handshake message to a sender address; this permits per-
+session keys T → and T ← , then they share the same view on        address rate limiting. We model this mechanism in a separate
+model in which a responder generates Rr , replies with a cookie         the stronger IND$-CPA property, which requires the ciphertext
+τ = mac(Rr , Ai ) upon receipt of messages 1 from Ai with               to be indistinguishable from random bits, as shown in [24].
+zero mac 2 , and verifies mac 2 upon receipt of messages 1 with            We discuss possible solutions to strengthen the identity
+non-zero mac 2 . The rest of the protocol is run by the adversary,      hiding for the protocol with MACs in Section VII.
+which has the long-term static keys. In particular, we do not              Proof Guidance and Metrics. CryptoVerif needs to be
+model the encryption of the cookie τ , but send it in the clear,        manually guided to perform these proofs. We sketch the main
+assuming that the adversary carries out the encryption and              instructions given to CryptoVerif for proving authentication
+decryption, which depend only on values it knows.                       and message secrecy in variant 1 of our model, with dynamic
+   In this model, we prove that, if a responder under load              compromise of the private static keys. The guidance we give
+accepts a handshake message from a sender with address                  for other proofs follows similar ideas.
+Ai , then this sender passed through a round trip, that is, the            The first step is to distinguish cases. In the initiator A, we add
+responder did indeed previously generate a cookie for the               a test to distinguish whether the partner public key is equivalent
+address Ai . This formalised by the following query:                    to B’s static public key, and whether the received ephemeral
+                                                                        is equivalent to an ephemeral generated by B. Similarly, in
+         event(accepted_cookie(Ai , ir , τ, msg β , mac 2 ))
+                                                                        the responder B, we distinguish whether the partner public
+      ⇒ event(generated_cookie(Ai , ir , τ )) ,                         key is equivalent to A’s static public key, and whether the
+                                                                        received ephemeral is equivalent to an ephemeral generated by
+where ir is an index that uniquely identifies the key Rr used
+                                                                        A. These case distinctions allow us to isolate Diffie-Hellman
+for generating the cookie. This query is proved under the
+                                                                        shared secrets that the adversary will be unable to compute
+assumption that mac is a pseudo-random function (PRF).
+                                                                        because both shares come from honest participants. Then, we
+   Identity Hiding. When the adversary has a candidate
+                                                                        apply the random oracle assumption for the 3 random oracles
+public key SYpub , it can determine whether this public key
+                                                                        chain06 , chain02 , chain01 . For the arguments of these oracles that
+is involved in WireGuard sessions, as already mentioned
+                                                                        are Diffie-Hellman shared secrets in the protocol (and thus are
+in the WireGuard specification [8]. In the first message, it
+                                                                        in Gsub ), we distinguish whether the argument received by the
+can test whether mac 1 = mac(hash(labelmac1 kSYpub ), msg α )
+                                                                        random oracle from the adversary is in Gsub before applying
+and that reveals whether SYpub = Srpub . A similar test on
+                                                                        the random oracle assumption. (When it is not in Gsub , it
+message 2 reveals whether SYpub = Sipub . When an entity
+                       pub                                              cannot collide with a call coming from the protocol.) Next, we
+with public key Sm          sends a cookie reply, the adversary
+                                                                        apply the gap Diffie-Hellman assumption; we split the keys
+can try to decrypt the encrypted cookie τ  with the key
+                                                                        generated by chain06 into 4 keys, and apply ciphertext integrity
+hash(labelcookie kSYpub ), the nonce nonce (obtained from the
+                                                                        of the AEAD scheme. (For keys that the adversary may have
+cookie reply), and the associated data mac 1 (obtained from a
+                                                                        after compromising the static keys, we apply a variant of the
+previous message). If decryption succeeds, then the adversary
+                                                                        ciphertext integrity transformation that allows corruption.) This
+knows that SYpub = Sm    pub
+                             . In practice, the public keys of VPN
+                                                                        suffices to obtain authentication. Then we apply the IND-CPA
+endpoints may be easy to obtain: they are often published to
+                                                                        property of the AEAD scheme to prove message secrecy.
+subscribers on a web page. In such scenarios, WireGuard does
+                                                                           In total, we give 36 instructions to CryptoVerif to perform
+not provide identity hiding.
+                                                                        this proof (not counting the instruction to display the current
+   If we consider the protocol without MACs and cookie
+                                                                        game), and CryptoVerif generates a sequence of 168 games.
+reply, that is, basically the Noise protocol IKpsk2, we can
+                                                                        This proof takes 14 min, the proof of key secrecy with dynamic
+obtain stronger identity protection guarantees, however with
+                                                                        compromise of private static keys takes 16 min, and the one for
+the additional assumption that the AEAD scheme also preserves
+                                                                        identity hiding 18 min on one core of an Intel Xeon 3.6 GHz;
+the secrecy of the associated data. Indeed, if the AEAD scheme
+                                                                        these are our longest proofs.
+is only IND-CPA and INT-CTXT, then the adversary may
+obtain the associated data of the first ciphertext Sipub  , that is,
+                                                                                               VII. D ISCUSSION
+hash(hash(H0 kSrpub )kEipub ). It can compare this value with
+hash(hash(H0 kSYpub )kEipub ) since Eipub is sent in the first             WireGuard is a promising new VPN protocol that aims
+message and H0 is a constant. Thus, it can determine whether            to replace IPsec and OpenVPN, and is being considered for
+Srpub = SYpub .                                                         adoption within the Linux kernel. We presented a mechanised
+   However, assuming that the AEAD scheme also preserves                cryptographic proof for a detailed model of WireGuard using
+the secrecy of the associated data, we prove using CryptoVerif          the CryptoVerif prover. Our model accounts for the full
+that the protocol without MACs and cookie reply satisfies               Noise IKpsk2 secure channel protocol as well as WireGuard’s
+the following identity hiding property: an adversary that has           extensions for stealthy operation and DoS resistance. We
+  pub     pub     pub    pub
+SA1   , SA2   , SB1   , SB2    cannot distinguish a configuration       consider an arbitrary number of parallel sessions, with an
+                                              pub
+in which the entity with public key SA1           initiates sessions    arbitrary number of transport data messages. Furthermore, we
+         pub
+with SB1 from one in which the entity with public key                   base our proof on a precise model of the Curve25519 group.
+  pub                              pub
+SA2    initiates sessions with SB2     . ChaCha20Poly1305 indeed           We proved correctness, message and key secrecy, forward
+preserves the secrecy of the associated data, because it satisfies      secrecy, mutual authentication, session uniqueness, channel
+binding, and resistance against replay, key compromise im-          Table I: Security models (upper part) and properties analysed
+personation, and denial of service attacks. In some cases, our      (lower part) in different works on WireGuard or Noise IKpsk2.
+analysis pointed out potential improvements in the protocol
+
+
+
+
+                                                                                                  Explorer [36]
+
+
+
+
+                                                                                                                                                          Paterson [12]
+(which we did not prove secure using CryptoVerif):
+
+
+
+
+                                                                                                                                            Milner [11]
+                                                                                                                                            Donenfeld,
+                                                                                                                  Dörig [37]
+
+                                                                                                                               Girol [38]
+
+
+
+
+                                                                                                                                                                          this work
+                                                                                                                                                          Dowling,
+   Adding Public Keys to the Chaining Key Derivation.
+
+
+
+
+                                                                                                                  Suter-
+                                                                                                  Noise
+When analysing WireGuard for Identity Mis-Binding attacks,
+our analysis uncovered a corner case. Suppose all the Diffie-
+Hellman keys in a session between two hosts A and B were                      verified protocol          Noise IKpsk2                                 WireGuard
+compromised, but the pre-shared key between them is still                              tool set     PV              T          T               T             m            CV
+secret. Then the adversary can set up a man-in-the-middle                computational model         x              x          x               x             X            X
+                                                                      Curve25519 w/ eq. keys         x              x          x               x             x            X
+attack where A thinks it is connected to B 0 , B thinks it is          compromise static keys       X               X          X               X             X            X
+connected to A0 , but in fact they are both connected to each           compromise eph. keys         x              x          X               X             X            X
+other, in the sense that the two connections have the same                 dishonest eph. keys       x              x          X               x             x             x
+                                                                              compromise psk        X               X          X               X             X            X
+traffic keys, even though they have different static keys.                compromise all keys        x              x          X               X             x            X
+   In particular, once it has set up the session, the adversary       both roles per static key      x              X          X               X             X            X
+can step away and let A and B directly communicate with each            mutual authentication        X              X          X             X               X            X
+other, while retaining the ability to read and modify messages                             KCI       X              X          X             X               X            X
+at will. Interestingly, this vulnerability only appears in our             1st message replay        —              —          —              x              x            X
+                                                                         transport data replay       x              X          X              x              x            X
+precise model of Curve25519; it cannot be detected under a                  session uniqueness       x              X          x             X               X            X
+classic Diffie-Hellman assumption.                                             channel binding       x              X          x              x              x            X
+   Although this attack scenario may be quite unrealistic, it                   DoS resistance       —              —          —              x              x            X
+                                                                          forward key secrecy        X              X          X             X               X            X
+points to a theoretical weakness in the protocol that is easy        forward message secrecy         X              X          X              x              x            X
+to prevent with a simple modification. Noise IKpsk2 already                     identity hiding      x              x          X             X2              x            X
+adds ephemeral public keys to the chaining key derivation;                identity mis-binding       x              x          x             X1              x            X
+we recommend that the static public keys be added as well.          Definitions differ between models.
+Alternatively, adding the full transcript hash to the traffic key   T = Tamarin, PV = ProVerif, CV = CryptoVerif, m = manual.
+                                                                    X= included, x = not included, — = not applicable.
+derivation would also prevent this corner case.                     1) The identity mis-binding issue we found was not found.
+   Separately, it is also worth noting that adding public keys to   2) Weaker identity hiding property using a surrogate term.
+the key derivation significantly helps with the cryptographic
+proof. For example, consider the Noise IK protocol, which           Essentially, the MAC key acts as an in-session cookie.
+is similar to IKpsk2 except that it does not use PSKs. IK              Related Work. The use of formal verification tools to
+does not mix the ephemeral keys into the chaining key, and          analyse real-world cryptographic protocols is now a well-
+it turns out that it is much harder for CryptoVerif to verify       established research area with hundreds of case studies (see
+than IKpsk2, since we now have to reason about mis-matched          e.g. [34]). CryptoVerif itself has been used to analyse modern
+ephemeral keys. In particular, even if we use a public PSK key      protocols like Signal [29] and TLS 1.3 [35]. We conclude
+of all-zeroes, the IKpsk2 protocol is easier to prove secure than   this paper by comparing our results with closely related work;
+IK. In fact, our recommendation is to add further contextual        Table I provides a condensed, high-level overview.
+information to the key derivation. It would not only prevent           WireGuard itself has been formally analysed before. Donen-
+theoretical attacks, but also make proofs easier.                   feld et al. [11] symbolically analyse the IKpsk2 key exchange
+   Balancing Stealth and Identity Hiding. Our analysis also         protocol used by WireGuard for a number of security goals,
+points out that the use of static public keys in mac 1 and          including identity mis-binding and identity hiding. However,
+mac 2 in WireGuard negatively affects the identity hiding           they do not model the MACs or the cookie mechanism, and
+guarantees provided by IKpsk2. This is a conscious trade-           hence they do not prove DoS resistance. Interestingly, their
+off that WireGuard makes to achieve stealthy operation [8].         analysis concludes the absence of identity mis-binding attacks
+However, in deployment scenarios where identity hiding is           even if all keys are compromised, because their model does
+more important than stealth, we recommend that the protocol         not include equivalent public keys. We disprove this property
+use a constant (say all-zeroes) instead of the static public keys   by considering a precise model of Curve25519.
+to compute the MACs and cookies.                                       Dowling et al. [12] present a manual cryptographic analysis
+   While it is difficult to preserve stealth while hiding the       of WireGuard. In particular, they prove key indistinguisha-
+responder’s identity, a modification to the protocol can still      bility for the WireGuard handshake based on the PRF-ODH
+hide the initiator’s identity. We recommend that the initiator      assumption in an extension of the eCK-PFS key exchange
+should send a MAC key (along with the timestamp) in the             model. (Because of this difference in the used assumption,
+first handshake message, and the responder should use this          our mechanization cannot be used directly to find issues in
+MAC key to compute mac 1 in the second handshake message.           proof steps; it is a different proof.) Key indistinguishability no
+The initiator can verify this MAC to get DoS protection, but        longer holds once the key is used, so they prove security for a
+its static public key is kept hidden from a network adversary.      slightly modified variant of the IKpsk2 protocol that includes a
+key confirmation message independent of the session keys. In                     [14] ——, “Computationally sound mechanized proofs of correspondence
+contrast, our proof requires no changes to the protocol, since                        assertions,” in IEEE CSF’07, Jul. 2007, pp. 97–111, extended version
+                                                                                      available at http://eprint.iacr.org/2007/128.
+we use an ACCE-style model. Furthermore, [12] focuses only                       [15] B. Lipp, B. Blanchet, and K. Bhargavan, “A mechanised cryptographic
+on the key exchange, and does not consider other properties like                      proof of the WireGuard virtual private network protocol,” Inria, Research
+identity hiding or DoS resistance. Their analysis also does not                       report 9269, Apr. 2019, https://hal.inria.fr/hal-02100345.
+                                                                                 [16] A. Langley, M. Hamburg, and S. Turner, “Elliptic curves for security,”
+find the identity mis-binding issue since they do not consider                        Jan. 2016, IETF RFC 7748.
+a scenario where all Diffie-Hellman keys are compromised.                        [17] M.-J. Saarinen and J.-P. Aumasson, “The BLAKE2 cryptographic hash
+   Finally, the Noise Explorer tool [36] has been used to                             and message authentication code (MAC),” 2015, IETF RFC 7693.
+                                                                                 [18] Nir, Yoav and Langley, Adam, “ChaCha20 and Poly1305 for IETF
+perform a comprehensive symbolic analysis of numerous Noise                           Protocols,” Jun. 2018, IETF RFC 8439.
+protocols using the ProVerif analyser. Noise Explorer can be                     [19] D. J. Bernstein, “Extending the Salsa20 nonce,” 2011, https://cr.yp.to/
+used to find violations of secrecy and authentication properties                      snuffle/xsalsa-20110204.pdf.
+                                                                                 [20] H. Krawczyk and P. Eronen, “HMAC-based extract-and-expand key
+for any protocol expressed in the language defined by Noise,                          derivation function (HKDF),” 2010, IETF RFC 5869.
+using per-message authentication and confidentiality grades. It                  [21] M. Bellare and P. Rogaway, “Random oracles are practical: a paradigm
+includes a symbolic analysis of Noise IKpsk2. A similar work                          for designing efficient protocols,” in ACM CCS’93. ACM Press, 1993,
+                                                                                      pp. 62–73.
+has been done in Tamarin [37], [38].                                             [22] A. Luykx, B. Mennink, and S. Neves, “Security analysis of BLAKE2’s
+                                                                                      modes of operation,” IACR Transactions on Symmetric Cryptology, vol.
+                       ACKNOWLEDGEMENTS                                               2016, no. 1, pp. 158–176, Dec. 2016.
+   We thank Jason A. Donenfeld, the author of WireGuard,                         [23] M. Bellare and C. Namprempre, “Authenticated encryption: Relations
+                                                                                      among notions and analysis of the generic composition paradigm,” in
+and Nadim Kobeissi, and our anonymous reviewers for their                             ASIACRYPT’00, ser. LNCS, vol. 1976. Springer, Dec. 2000, pp. 531–
+helpful feedback on our work. This research was partly funded                         545.
+by the European Union’s Horizon 2020 NEXTLEAP Project                            [24] G. Procter, “A security analysis of the composition of ChaCha20 and
+                                                                                      Poly1305,” Cryptology ePrint Archive, Report 2014/613, 2014, https:
+(grant agreement nº 688722), ERC CIRCUS (grant agreement                              //eprint.iacr.org/2014/613.
+nº 683032), ANR AnaStaSec (decision number ANR-14-CE28-                          [25] D. J. Bernstein, “The Poly1305-AES message-authentication code,” in
+0014-01), and ANR TECAP (decision number ANR-17-CE39-                                 FSE 2005, ser. LNCS, vol. 3557. Springer, 2005, pp. 32–49.
+                                                                                 [26] T. Okamoto and D. Pointcheval, “The gap-problems: a new class of
+0004-03).                                                                             problems for the security of cryptographic schemes,” in PKC 2001, ser.
+                                                                                      LNCS, vol. 1992. Springer, Feb. 2001, pp. 104–118.
+                              R EFERENCES                                        [27] J. Brendel, M. Fischlin, F. Günther, and C. Janson, “PRF-ODH: Relations,
+ [1] S. Kent and K. Yao, “Security Architecture for the Internet Protocol,”           instantiations, and impossibility results,” in CRYPTO 2017, ser. LNCS,
+     2005, IETF RFC 4301.                                                             vol. 10403. Springer, Aug. 2017, pp. 651–681.
+ [2] E. Rescorla, “The Transport Layer Security (TLS) Protocol Version 1.3,”     [28] J.-S. Coron, Y. Dodis, C. Malinaud, and P. Puniya, “Merkle-Damgård
+     2018, IETF RFC 8446.                                                             revisited: How to construct a hash function,” in CRYPTO 2005, ser.
+ [3] K. Bhargavan and G. Leurent, “On the practical (in-)security of 64-bit           LNCS, vol. 3621. Springer, 2005, pp. 430–448.
+     block ciphers: Collision attacks on HTTP over TLS and OpenVPN,” in          [29] N. Kobeissi, K. Bhargavan, and B. Blanchet, “Automated verification for
+     ACM CCS’16, 2016, pp. 456–467.                                                   secure messaging protocols and their implementations: A symbolic and
+ [4] B. Beurdouche, K. Bhargavan, A. Delignat-Lavaud, C. Fournet,                     computational approach,” in IEEE EuroS&P’17, Apr. 2017, pp. 435–450.
+     M. Kohlweiss, A. Pironti, P. Strub, and J. K. Zinzindohoue, “A messy        [30] J.-P. Aumasson, S. Neves, Z. Wilcox-O’Hearn, and C. Winnerlein,
+     state of the union: Taming the composite state machines of TLS,” in              “BLAKE2: Simpler, smaller, fast as MD5,” in Applied Cryptography and
+     IEEE S&P (Oakland), 2015, pp. 535–552.                                           Network Security, ser. LNCS, vol. 7954. Springer, 2013, pp. 119–135.
+ [5] K. Bhargavan, A. Delignat-Lavaud, C. Fournet, A. Pironti, and P. Strub,     [31] Y. Dodis, T. Ristenpart, J. Steinberger, and S. Tessaro, “To hash or not to
+     “Triple handshakes and cookie cutters: Breaking and fixing authentication        hash again? (in)differentiability results for H 2 and HMAC,” in CRYPTO
+     over TLS,” in IEEE S&P (Oakland), 2014, pp. 98–113.                              2012, ser. LNCS, vol. 7417. Springer, 2012, pp. 348–366, full version
+ [6] M. Marlinspike and T. Perrin, “The X3DH key agreement protocol,” Nov.            at https://eprint.iacr.org/2013/382.
+     2016, available at https://signal.org/docs/specifications/x3dh/.            [32] T. Jager, F. Kohlar, S. Schäge, and J. Schwenk, “On the security of
+ [7] T. Perrin, “The Noise protocol framework,” Jul. 2018, https://                   TLS-DHE in the standard model,” in CRYPTO 2012, ser. LNCS, vol.
+     noiseprotocol.org/noise.html.                                                    7417. Springer, 2012, pp. 273–293.
+ [8] J. A. Donenfeld, “WireGuard: Next generation kernel network tunnel,” in     [33] L. Chen and Q. Tang, “Bilateral unknown key-share attacks in key
+     Network and Distributed System Security Symposium, NDSS, 2017, we use            agreement protocols,” Journal of Universal Computer Science, vol. 14,
+     the up-to-date whitepaper version for our analysis, which differs in how         no. 3, pp. 416–440, Feb. 2008.
+     the MACs are defined: https://www.wireguard.com/papers/wireguard.pdf,       [34] B. Blanchet, “Security protocol verification: Symbolic and computational
+     Nov. 2nd, 2017, draft revision ceb3a49.                                          models,” in Principles of Security and Trust, POST’12, ser. LNCS, vol.
+ [9] B. Blanchet, “Modeling and verifying security protocols with the applied         7215. Springer, 2012, pp. 3–29.
+     pi calculus and ProVerif,” Foundations and Trends in Privacy and            [35] K. Bhargavan, B. Blanchet, and N. Kobeissi, “Verified models and
+     Security, vol. 1, no. 1-2, pp. 1–135, Oct. 2016.                                 reference implementations for the TLS 1.3 standard candidate,” in IEEE
+[10] S. Meier, B. Schmidt, C. Cremers, and D. A. Basin, “The TAMARIN                  S&P (Oakland), 2017, pp. 483–502.
+     prover for the symbolic analysis of security protocols,” in Computer        [36] N. Kobeissi, G. Nicolas, and K. Bhargavan, “Noise Explorer: Fully
+     Aided Verification, CAV’13, ser. LNCS, vol. 8044. Springer, 2013, pp.            automated modeling and verification for arbitrary Noise protocols,” in
+     696–701.                                                                         IEEE EuroS&P 2019, Jun. 2019, in this volume. The tool is available at
+[11] J. A. Donenfeld and K. Milner, “Formal verification of the                       https://noiseexplorer.com/.
+     WireGuard protocol,” 2018, https://www.wireguard.com/papers/                [37] A. Suter-Dörig, “Formalizing and verifying the security protocols from
+     wireguard-formal-verification.pdf.                                               the Noise framework,” Bachelor’s thesis, ETH Zürich, Nov. 2018,
+[12] B. Dowling and K. G. Paterson, “A cryptographic analysis of the                  available at https://www.ethz.ch/content/dam/ethz/special-interest/infk/
+     WireGuard protocol,” in Applied Cryptography and Network Security,               inst-infsec/information-security-group-dam/research/software/noise_
+     ACNS 2018, ser. LNCS, vol. 10892. Springer, 2018, pp. 3–21.                      suter-doerig.pdf.
+[13] B. Blanchet, “A computationally sound mechanized prover for security        [38] G. Girol, “Formalizing and verifying the security protocols from the
+     protocols,” IEEE Transactions on Dependable and Secure Computing,                Noise framework,” Master’s thesis, ETH Zürich, Mar. 2019, available at
+     vol. 5, no. 4, pp. 193–207, Oct.–Dec. 2008.                                      https://doi.org/10.3929/ethz-b-000332859.
+

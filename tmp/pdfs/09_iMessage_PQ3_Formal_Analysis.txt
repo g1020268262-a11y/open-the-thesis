@@ -1,0 +1,1324 @@
+A Formal Analysis of Apple’s iMessage PQ3 Protocol
+          Felix Linker, Ralf Sasse, and David Basin, ETH Zurich
+     https://www.usenix.org/conference/usenixsecurity25/presentation/linker
+
+
+
+
+     This paper is included in the Proceedings of the
+            34th USENIX Security Symposium.
+                  August 13–15, 2025 • Seattle, WA, USA
+                               978-1-939133-52-6
+
+
+                    Open access to the Proceedings of the
+           34th USENIX Security Symposium is sponsored by USENIX.
+                       A Formal Analysis of Apple’s iMessage PQ3 Protocol
+
+                   Felix Linker                                                    Ralf Sasse
+    Department of Computer Science, ETH Zurich                     Department of Computer Science, ETH Zurich
+                                                    David Basin
+                                     Department of Computer Science, ETH Zurich
+
+
+                         Abstract                                  they intercept and to decrypt it in the future when quantum
+                                                                   computers become sufficiently powerful [30].
+We present the formal verification of Apple’s iMessage PQ3,
+                                                                      In this paper, we present our formal analysis of Apple’s ad-
+a highly performant, device-to-device messaging protocol
+                                                                   vanced, widely deployed iMessage PQ3 Messaging Protocol,
+offering strong security guarantees even against an adversary
+                                                                   or PQ3 for short. PQ3 is used across all of Apple’s devices for
+with quantum computing capabilities. PQ3 leverages Apple’s
+                                                                   device-to-device messaging and underlies many other Apple
+identity services together with a custom, post-quantum secure
+                                                                   services, e.g., iMessage, FaceTime, HomeKit, and HomePod
+initialization phase and afterwards it employs a double ratchet
+                                                                   hand-off. PQ3 is designed to be performant and to offer strong
+construction in the style of Signal, extended to provide post-
+                                                                   guarantees against powerful adversaries, including those who
+quantum, post-compromise security.
+                                                                   later possess quantum computers.
+   We present a detailed formal model of PQ3, a precise spec-
+ification of its fine-grained security properties, and machine-       PQ3 employs a double-ratchet construction similar to Sig-
+checked security proofs using the TAMARIN prover. Particu-         nal [32]. The protocol takes a hybrid approach to security
+larly novel is the integration of post-quantum secure key en-      and combines classical cryptographic primitives, like elliptic
+capsulation into the relevant protocol phases and the detailed     curve Diffie-Hellman, and post-quantum primitives, namely
+security claims along with their complete formal analysis. Our     ML-KEM [29], a module-lattice-based key-encapsulation
+analysis covers both key ratchets, including unbounded loops,      mechanism. The hybrid construction means that PQ3’s secu-
+which was believed by some to be out of scope of symbolic          rity does not solely depend on the security of post-quantum
+provers like TAMARIN (it is not!).                                 primitives, which are less well understood than their classic
+                                                                   counterparts. Moreover, PQ3’s integration of hybrid cryptog-
+                                                                   raphy into the double ratchet provides stronger guarantees
+1   Introduction                                                   than Signal, where a post-quantum Key Encapsulation Mecha-
+                                                                   nism (KEM) is just integrated into the protocol’s setup phase,
+Research on secure instant messaging goes back over two            but not into its ratcheting (see Section 2).
+decades, with early proposals including Off-the-Record Mes-           We analyzed PQ3’s security in detail using the TAMARIN
+saging [9], the Silent Circle Instant Messaging Protocol [31],     prover [33, 28], a state-of-the-art security protocol model
+iMessage, and Signal [32, 24, 27]. Over time, the security         checker. Our formal models and proofs are accessible on
+community’s understanding of the threat models and secu-           Zenodo [25]. We report on our model of PQ3, the adversary
+rity claims for secure messaging evolved. Modern messaging         assumptions, and the protocol’s desired properties. We use
+protocols now offer strong guarantees and can communicate          TAMARIN’s specification language to specify the messaging
+messages secretly even in the presence of adversaries who cor-     protocol and its use of classical and post-quantum cryptog-
+rupt different parties in different ways during the protocol’s     raphy. We also specify all forms of adversary compromise,
+execution. This is befitting given that strong adversaries, like   including the event in which the attacker obtains a sufficiently
+nation states, are capable of compromising both messaging          powerful quantum computer, allowing them to break all non-
+servers and the end points sending and receiving messages.         post-quantum-secure cryptographic primitives. Essentially,
+More recently, security against adversaries with quantum com-      the adversary can compromise any key at any time, either
+puting capabilities has also become an important concern.          through dedicated key-reveal rules or because they obtained a
+This requires protection against adversaries who can “harvest      quantum computer. Using TAMARIN’s property language, we
+now and decrypt later,” namely adversaries who leverage the        formalize and prove both secrecy and authenticity theorems.
+decreasing cost of mass storage to store the encrypted data        These theorems precisely express the protocol’s security guar-
+
+
+
+USENIX Association                                                                    34th USENIX Security Symposium         5015
+antees capturing fine-grained notions of key compromise.             in how they bootstrap trust to set up initial keys, the prop-
+   Our analysis establishes that PQ3 provides strong security        erties they achieve, the adversaries they consider, whether
+guarantees against an active network adversary that can com-         bilateral or group communication is supported, and usability.
+promise any secret key, unless explicitly stated otherwise. For      The strongest protocols support message secrecy and authen-
+example, PQ3 provides forward secrecy, post-compromise               ticity against very strong adversaries. As servers cannot be
+security, and post-quantum security with respect to a “har-          trusted, encryption must be carried out end-to-end. Moreover,
+vest now, decrypt later” adversary. In contrast to Signal, PQ3       it is common to consider adversaries who can compromise
+provides post-compromise security also against active clas-          agents’ long-term secrets, and even their session states.
+sical and “harvest now, decrypt later” adversaries and not               The security bar is now quite high. Modern protocols like
+only against passive, classical adversaries. Moreover, the fine-     Signal, which is used for example in the Signal app, What-
+grained analysis of compromise possibilities and their effects       sApp, and Facebook Secret Conversations, offer security guar-
+is useful for guiding secure implementations of PQ3. For ex-         antees, even when adversaries compromise the devices of the
+ample, the compromise of a participant’s long-term identity          agents running the protocol. In particular, Signal supports
+key impacts all security guarantees and thus should be stored        both forward secrecy and post-compromise security [14, 8],
+with extra care, for example, in a device’s secure enclave.          also called self-healing or backward secrecy. The former pro-
+                                                                     tects the protocol’s participants against the future compromise
+Contributions Our first contribution is the formalization            of past sessions, for example, the loss of a long-term secret
+and machine-checked verification of PQ3 to prove all our             should not jeopardize the secrecy of previously exchanged
+security claims. Namely, we use TAMARIN to prove that PQ3            messages. The latter helps the participants to recover or “self-
+offers strong security guarantees against a powerful adversary       heal” from a past compromise to communicate secretly again
+with quantum computing capabilities. These guarantees are            in the present and future.
+fine-grained and comprehensive in that omitting any of the               Messaging protocols achieve these strong properties by
+many adversary compromise cases leads to attacks. Our ver-           using ratcheting, an approach to continually generate new
+ification thereby provides a formal, machine-checked proof           keys. Ratcheting was first proposed in the Off-the-Record
+that PQ3 meets the high expectations for a modern device-to-         Messaging [9] protocol where, with each message round
+device messaging protocol. This high assurance is important          trip, users establish a fresh ephemeral Diffie-Hellman
+given the prominent role of this protocol, which is used in          shared secret. Signal further developed this idea with their
+billions of devices worldwide, and its limited prior analysis.       double-ratchet algorithm [32], which nests two ratchets: an
+   Our second contribution is to show that symbolic security         outer public-key ratchet and an inner symmetric-key ratchet.
+protocol model checkers, in particular TAMARIN, can verify           This mechanism ensures that the symmetric keys used for
+substantial, real-world protocols with nested loops, in their        encryption and decryption are updated with every message
+full complexity. This is non-trivial as it entails reasoning about   sent, as opposed to just on every round trip. The protocol can
+unboundedly many parallel instances of the protocol, where           recover from past compromises on every round-trip due to
+the runs (two devices sending messages) are themselves un-           a new Diffie-Hellman secret. Forward secrecy is achieved
+bounded. In fact, it was commonly believed that “unbounded           for the symmetric keys as the ratchet chain does not allow
+(looping) protocols like Signal, and protocols with mutable re-      one to compute the previous keys from the current message
+cursive data structures [...] are also out of scope for symbolic     encryption key, but only the future ones.
+provers, without introducing artificial restrictions” [3]. Our           More recently, researchers have investigated improvements
+work shows that this is not the case and provides a general          offering guarantees against adversaries with quantum com-
+methodology for carrying out such proofs.                            puting capabilities. The Signal protocol uses the Extended
+                                                                     Triple Diffie-Hellman (X3DH) Key Agreement Protocol [27]
+Organization In Section 2 we survey related work on mes-             to negotiate the session key used as the ratchet’s initial root
+saging protocols and their verification. Afterwards, in Sec-         key. The recently developed PQXDH Key Agreement Proto-
+tions 3 and 4 we describe PQ3’s threat model, requirements,          col [24] strengthens X3DH by additionally incorporating a
+and the protocol itself. In Section 5 we present our TAMARIN         post-quantum KEM like Crystals-Kyber [10], and has been
+model of PQ3, the adversary, the protocol’s properties, and          verified using both ProVerif and CryptoVerif [4], as well as
+details on our proofs. We draw conclusions in Section 6.             with a pen-and-paper game-based reduction proof [19]. It has
+                                                                     been proven (see Section 2.2) that PQXDH provides forward
+2     Related work                                                   secrecy even in the presence of an adversary with quantum
+                                                                     computing capabilities, provided all KEM private keys remain
+                                                                     uncompromised. However, as the post-quantum KEM is only
+2.1    Messaging Protocols
+                                                                     used in the setup phase, the subsequent use of Signal’s double
+Over the past decades, hundreds of secure messaging systems          ratchet does not provide post-compromise security against an
+have been proposed [35]. The underlying protocols differ             adversary with quantum computing capabilities, which PQ3
+
+
+
+5016    34th USENIX Security Symposium                                                                        USENIX Association
+does. Note that both X3DH and PQXDH additionally provide            concrete and detailed than in our approach. In contrast, the
+cryptographic deniability [36], which is not provided by PQ3        security model, and the proofs (which are game-based, fo-
+and hence out of scope for our work.                                cused on deriving a bound on the adversary’s advantages) are
+                                                                    considerably more complex, and proofs are pen-and-paper
+                                                                    based, rather than machine checked.
+2.2    Verification of Messaging Protocols
+                                                                       We believe, as Apple researchers also do, that there is sub-
+There has been considerable research on verifying messaging         stantial benefit to having both kinds of proofs, as they both
+protocols using sophisticated constructions like the double         have their relative strengths. Computational proofs capture
+ratchet to achieve strong security guarantees. Researchers          the detailed cryptographic assumptions on the operators used.
+have studied Signal and variants of it from both a computa-         They can also capture the adversary’s advantage in attack-
+tional and a symbolic perspective, using both pen-and-paper         ing a protocol, by bounding the probability of success for an
+and machine-checked proofs.                                         adversary with given computational resources. In contrast,
+                                                                    symbolic proofs better support machine-checked proofs, us-
+Computational proofs A number of pen-and-paper proofs               ing different computer-supported proof techniques, like con-
+of messaging protocols involving double ratchets have been          straint solving and mathematical induction. This supports
+constructed in the computational setting. This means, in con-       giving detailed models of protocols’ and adversary’s oper-
+trast to the symbolic model (introduced shortly), that proto-       ational semantics, considering unboundedly many protocol
+cols are analyzed with respect to computational definitions         participants and interleaved parallel sessions, and verifying
+of security. Agents manipulate bit strings, the adversary’s ca-     these against detailed, fine-grained security properties.
+pabilities are modeled by probabilistic polynomial-time Tur-           This value of symbolic proofs is exemplified by our anal-
+ing machines, and security definitions are thus probabilistic.      ysis of injective agreement [26] (Section 5.3.2), which for-
+These models support a more detailed analysis of cryptog-           malizes that a protocol provides replay protection. [34] did
+raphy than symbolic abstractions. However, the proofs can           not consider replay in its analysis, and during our TAMARIN
+be quite complex and hence they typically involve their own         proofs, we uncovered that injective agreement can only be
+abstractions or protocol simplifications. Moreover, given that      provided under additional assumptions (not present in [34])
+the proofs are traditional pen-and-paper arguments, they are        on the session-handling layer.
+more error-prone than proofs checked by computers. There
+are exceptions, namely computational proofs constructed with        Symbolic proofs In terms of verification, the works closest
+tools like CryptoVerif [6], but these are usually limited to the    to ours use the symbolic model of cryptography. In this
+study of relatively simple combinations of primitives, not          model, messages are represented as terms in a term algebra
+complex protocols like the full Signal or PQ3 double ratchet.       (rather than bit-strings) and one uses possibilistic rather
+   In [5], the authors analyze variants of the double ratchet       than probabilistic definitions of security. TAMARIN [33, 28]
+protocol in the Universal Composability framework. As part          and ProVerif [7] are examples of tools constructing proofs
+of their analysis, they consider when keys must be deleted          in this setting. For example, to show that a key is a secret,
+for different properties to hold. Their proofs are game-based       one would use these tools to prove that, no matter how
+with detailed security definitions. Game-based proofs are also      arbitrarily many protocol runs are interleaved, including runs
+given by [11, 13, 1]. In particular, [13] presents a formal anal-   where the adversary is active, the adversary cannot possibly
+ysis of Signal in the random oracle model. Their focus is on        learn the intended secret. Such proofs may be constructed
+Signal’s key agreement and they reason about loops using            automatically or interactively, and attempts to prove false
+induction. [1] carries out game-based proofs for a Signal-like      statements generally yield attacks on the specified properties.
+protocol; they provide a rational reconstruction of a general-         [18] analyzes Signal’s session-handling layer Sesame. They
+ized protocol that modularly achieves the different kinds of        use TAMARIN to show that, when sessions are accounted for,
+properties one wants from Signal and the use of double ratch-       Signal does not achieve post-compromise security despite the
+ets. In all these works, security is shown using pen-and-paper      double ratchet having this property. In this work, we do not
+proofs, which are not machine checked, and post-quantum             consider PQ3’s session-handling layer as its specification was
+security is not considered.                                         not made available to us. Analyzing PQ3 in conjunction with
+   Concomitantly to our work, Stebila carried out a computa-        session handling is an interesting line of future work.
+tional analysis of PQ3 [34], providing a reduction argument            [22] use ProVerif and CryptoVerif [6] to analyze a variant
+for its security. He also formalizes the hybrid cryptography        of Signal where they extract the models they analyze from an
+integrated into both PQ3’s initialization and double ratchet,       implementation in a JavaScript dialect. Their models are sub-
+and establishes that this provides both forward secrecy and         stantially simplified. For example, they lack the inner ratchet
+post-compromise security against both classical and “harvest        based on symmetric cryptography and only consider a fixed,
+now, decrypt later” adversaries. The modeling of cryptogra-         finite number of protocol sessions without loops.
+phy is, as is standard for computational formalizations, more          As previously explained, Signal uses the X3DH protocol
+
+
+
+USENIX Association                                                                    34th USENIX Security Symposium         5017
+to agree on a shared key (the initial root key) prior to the       originating from the peer at message counter i, the peer must
+double ratchet’s start. The post-quantum version PQXDH has         have actually sent the message using counter i, intending it to
+been analyzed in [4] both symbolically, using ProVerif, and        go to the receiver. Moreover, this agreement is injective [26].
+computationally, using CryptoVerif. As the authors explain         Namely, a given message is only accepted once by the recipi-
+“Notably, this is the first machine-checked post-quantum secu-     ent; hence the protocol provides replay protection.
+rity proof of a real-world cryptographic protocol.” While this
+is indeed the case, they only consider the initialization part
+of the Signal protocol. They do not reason about the double        3.2     Threat Model
+ratchet construction, which is based on classical cryptography
+and thus provides no post-quantum security guarantees.             PQ3 seeks to provide the above security properties even when
+                                                                   the protocol is run in the presence of a strong active net-
+   In [3], the authors analyzed Signal based on an F* im-
+                                                                   work adversary who may have access to a powerful quantum
+plementation. They observe: “Notably, Signal has not been
+                                                                   computer in the future. As an active network adversary, the
+mechanically analyzed for an arbitrary number of rounds be-
+                                                                   adversary can read, reorder, intercept, replay, and send any
+fore. The ProVerif analysis of the Signal protocol in [22]
+                                                                   message to any participant. We assume though that devices
+was limited to two messages (three ratcheting rounds), at
+                                                                   use strong randomness and that, short of possessing a quan-
+which point the analysis already took 29 hours. (With Cryp-
+                                                                   tum computer, the adversary cannot factor large numbers or
+toVerif, the analysis of Signal has to be limited to just one
+                                                                   compute discrete logs. Hence, in the pre-quantum era, cryp-
+ratcheting round).” Their own proof is however also limited
+                                                                   tographic primitives like (elliptic curve) Diffie-Hellman are
+and only verifies properties for the outermost ratchet. In con-
+                                                                   secure against the adversary.
+trast, our proof uses induction within TAMARIN to machine
+check proofs about both ratchets of PQ3. Even in the classical        By default, the adversary can access every participants’ key
+setting, ignoring our post-quantum extensions, verifying the       material unless we explicitly forbid this. We will refine our
+inner ratchet allows us to establish security properties against   threat model for each security property and list all the keys
+stronger adversaries who can compromise session state during       that the adversary must not access for the security property
+the inner ratchet’s execution.                                     to hold. This allows us to focus on which key material the
+                                                                   adversary must access to violate a security guarantee and to
+                                                                   abstract from whether this compromise is plausible. For ex-
+3     Requirements and Threat Model                                ample, recently developed cryptographic primitives, designed
+                                                                   to provide post-quantum security, may turn out to be flawed.
+3.1    Security Requirements                                       Some keys are stored in a devices’ main memory and rela-
+                                                                   tively easy to compromise, whereas others, like identity keys,
+Secrecy PQ3 was designed to provide strong secrecy guar-
+                                                                   are stored in Apple’s Secure Enclave and are thus much harder
+antees, namely message secrecy, forward secrecy, and post-
+                                                                   to compromise. The fact the adversary can access every key
+compromise security. Message secrecy means that as long
+                                                                   by default allows us to consider all of these cases.
+as neither participants’ session states are revealed, the adver-
+sary cannot learn any of their exchanged messages. Forward            In addition, our threat model accounts for the possi-
+secrecy and post-compromise security limit the window in           bility that the adversary may at some point possess a
+which an adversary can learn exchanged messages after they         cryptographically-relevant quantum computer. When this hap-
+compromise parts of the session state. We discussed forward        pens, the adversary will be able to break all non-post-quantum-
+secrecy and post-compromise security already in Section 2.1.       secure primitives, such as elliptic curve Diffie-Hellman, and
+In short, forward secrecy protects protocol participants against   can access all such secret key material, independently of what
+the future compromise of past sessions, and post-compromise        a refined threat model may state.
+security helps to recover or “self-heal” from a past compro-          We constrain the adversary’s future quantum computing
+mise to communicate secretly again in the present and future.      capabilities by assuming that as soon as the adversary
+   In our security analysis, we define a secrecy lemma that        possesses a quantum computer, no honest participant runs
+captures all three notions of secrecy and that addresses the       the protocol. This models an adversary that anticipates
+precise implications of partial session state compromise. De-      future developments in quantum computing and stores all
+scribing this fine-grained secrecy lemma requires a detailed       messages sent by the protocol participants. For this reason,
+understanding of the key material used in PQ3, and is thus         the adversary is a passive quantum attacker and is referred
+deferred to Section 5.3.1.                                         to as a “harvest now, decrypt later” adversary.1
+                                                                      For setup and session establishment, the protocol leverages
+                                                                   Apple’s IDentity Services (IDS) key directory. We assume
+Authentication and Replay Protection A message recipi-
+ent can identify the message’s sender. We formulate this as an        1 Note that PQ3 only protects past sessions against quantum attackers. To
+agreement property: the recipient and sender agree on their        protect active sessions, PQ3’s relies on an elliptic curve signature scheme,
+view of the message. For any message received, allegedly           which can be broken by a quantum computer.
+
+
+
+
+5018    34th USENIX Security Symposium                                                                              USENIX Association
+that this directory is secure in that it only distributes the par-                              ECDH                            KEM
+ticipants’ authentic public keys. The problem of key authenti-                         From peer From client           From peer From client
+cation is orthogonal to PQ3 and has recently been addressed
+by Apple with their rollout of “Contact Key Verification” [2].                            Pub           Priv              Pub            Priv
+
+
+                                                                                                                                 OR
+4     PQ3 Messaging Protocol                                          0x0   OR   𝑟𝑘!             DH                             KEM SS      OR    0x0
+
+
+PQ3 is a device-to-device messaging protocol where either                                                      HKDF
+device can asynchronously exchange messages at any time,
+independent of the connection status of their peer’s device.
+We first describe PQ3 at a high-level of abstraction, followed                                  𝑐𝑘!,%          𝑟𝑘!"#
+by a more detailed account. We provide a full pseudocode
+specification of PQ3 in [25].                                                     𝑐𝑘!,#         𝑚𝑘!,%
+
+
+                                                                                   …
+4.1    High-level Account
+In PQ3, communication between two parties, say Alice and             Figure 1: Dependency between the keys used by PQ3. Ar-
+Bob, works roughly as follows. Suppose that Alice wants to           rows denote that one value is used to derive another. The lock
+initiate messaging with Bob.                                         icons denote KEM encapsulation or decapsulation respec-
+                                                                     tively. Sometimes a zero-byte sequence is used instead of a
+1. Alice queries Apple’s IDentity Service (IDS) for Bob’s            root key or KEM shared secret.
+   pre-key material and a long-term identity public key.
+
+2. Alice derives an initial root key, chain key, and message key.    4.2     More Detailed Account
+   Alice encrypts her first message for Bob using the message        We now expand on the above account. Although this account
+   key and sends Bob the ciphertext along with a signature           is more detailed, we still focus on the essential ideas and we
+   and the key material necessary to derive the initial root         omit some low-level details, like message and key derivation
+   key.                                                              tags. Moreover, we describe some additional features of PQ3
+                                                                     at the end of this section.
+3. Upon receiving this new message, Bob lacks the key to
+   decrypt the ciphertext, and so he must derive it. Bob first
+   queries the IDS to verify Alice’s long-term identity public       Keys PQ3 specifies many keys. Every participant has a
+   key and checks the received signature. He uses the key ma-        long-term identity key, a P-256 ECDSA public/private key
+   terial received from Alice to derive the initial root, chain,     pair to authenticate messages and other key material. Long-
+   and message key and decrypts the initial message. Alice           term identity public keys are distributed and authenticated
+   and Bob have now established a shared session.                    using the IDS. All other keys are used to derive message keys.
+                                                                     Figure 1 depicts the dependencies between these keys.
+4. As long as the session does not change direction (i.e.,              We start by introducing PQ3’s three types of symmetric
+   the current sender keeps sending messages), both parties          keys. These symmetric keys are always derived with respect
+   perform symmetric ratcheting. In the symmetric ratchet,           to a given public-key ratchet step (identified by i in Fig. 1).
+   participants use the old chain key to derive a new chain          Message keys (depicted as mki,0 ) are the message encryption
+   and message key.                                                  keys and are derived from chain keys (depicted as cki,0/1 ).
+                                                                     Chain keys are derived from either previous chain keys or
+5. Whenever the session changes direction (i.e., the current         initially from the same entropy sources as the root keys. Root
+   receiver wants to reply), both parties perform public-key         keys (depicted as rki/i+1 ) are used in every public-key ratchet
+   ratcheting. In the public-key ratchet, participants use the       step and, in particular, maintain the entropy from previous
+   old root key and newly sampled asymmetric key material            public-key ratchets.
+   to derive a new root key.                                            Root and initial chain keys are derived from three entropy
+                                                                     sources: the session’s previous root key (or a zero-byte se-
+At this high level of abstraction, Steps 2–5 resemble the stan-      quence upon session start; rki in Fig. 1), an ECDH shared
+dard double-ratchet construction. But there are significant          secret (“DH” in Fig. 1), and optionally a KEM shared secret
+differences in the concrete details on how the ratchets are per-     (replaced with a zero-byte sequence when omitted; “KEM SS”
+formed, in particular how a post-quantum KEM is integrated           in Fig. 1). To establish these shared secrets, every client uses
+into the ratcheting.                                                 P-256 ECDH public/private key pairs, which we call ECDH
+
+
+
+USENIX Association                                                                        34th USENIX Security Symposium                         5019
+        1                                                                                                       Figure 2: PQ3’s public-key ratchet. Each block
+                             Alice                                             Bob
+                                                                                                                1-4 illustrates a public-key ratchet step. We
+                         Pre-Keys              Pub          Pub   Priv                                          omit the symmetric ratchet; chain and message
+             Root Keys      Pub                                               Pub    Priv   Root Keys           keys are derived from the output of the HKDF
+                0x0                                                                            0x0              (denoted by “. . . ”). In Step 1, Alice initiates
+                            DH                                                        DH
+               HKDF                      SS                              SS                   HKDF
+                                                                                                                a session with Bob and uses pre-key material
+         …                  Priv   Pub                                               Pub                …
+                                                                                                                (white box) to derive a root key. Alice sends a
+        2
+                                                                                                                freshly encapsulated shared KEM secret (lock
+                            DH                                                        DH
+               HKDF                      0x0                             0x0                  HKDF              icon), and a freshly sampled ECDH public key
+         …                  Pub                                                Pub   Priv               …
+                                                                                                                to Bob that Bob can use to derive session keys.
+        3                   DH                                                        DH
+                                                                                                                New KEM shared secrets are only encapsu-
+               HKDF                      0x0   Priv   Pub         Pub    0x0                  HKDF              lated and shared when a new KEM public key
+         …                  Priv   Pub                                               Pub                …       was sent in the previous public-key ratchet (see
+        4                   DH                                                        DH                        block 4). Orange/gray key pairs denote ML-
+               HKDF                      SS                              SS                   HKDF
+                                                                                                                KEM keys, green/blue key pairs denote ECDH
+                            Pub                                               Pub    Priv
+         …                                                                                              …
+                                                                                                                keys. This figure was inspired by [32].
+
+
+
+keys, and ML-KEM 768 or 1024 public/private key pairs,                                                  the figure to avoid clutter and to focus on the key material
+which we call KEM keys. Clients establish the ECDH shared                                               used in root key derivation.
+secret by combining an ECDH public key from their peer with                                                Alice’s actions are depicted in the left, blue half of Figure 2.
+their own ECDH private key (“ECDH Pub/Priv” in Fig. 1).                                                 Alice initiates her session with Bob by performing an IDS
+Clients establish the KEM shared secret either by encapsulat-                                           query for Bob’s identity. Alice thereby learns three keys from
+ing it for their peer using their peer’s KEM public key or by                                           the query’s result: Bob’s long-term identity public key, an
+having their peer encapsulate it for them and decapsulating it                                          ECDH public pre-key, and a KEM public pre-key. Query-
+with their own KEM private key (“KEM Pub/Priv” in Fig.1).                                               ing and using pre-keys is depicted within the white box in
+   In general, every client uses distinct, fresh ECDH and KEM                                           Figure 2. Alice then generates a fresh ECDH ephemeral pub-
+keys for every session, the public part of which they send in                                           lic/private key pair (“Priv/Pub” in Step 1) and encapsulates
+PQ3 messages to their peer. These session-specific keys are                                             a fresh KEM shared secret with Bob’s public pre-key (lock
+called ephemeral keys. Ephemeral keys are short-lived and                                               icon in Step 1). The encapsulation algorithm provides Alice
+used only for a specific session. To support asynchronous mes-                                          with the cleartext KEM shared secret for her use (shown as
+saging, clients use ECDH and KEM public pre-keys instead                                                “SS” in Step 1), and ciphertext to be given to Bob (the lock
+of their ephemeral counterparts upon session start (the ECDH                                            to the right of “SS”, showing that it used the KEM public
+and KEM keys depicted in Figure 1 could be either ephemeral                                             pre-key from above). Bob can decapsulate the KEM shared
+or pre-keys). Clients upload their pre-keys to the IDS using                                            secret with his KEM private pre-key to receive the same KEM
+timestamped pre-key bundles, which are signed with their                                                shared secret. Alice then combines her ECDH ephemeral pri-
+long-term identity key. Clients can fetch their peers’ pre-keys                                         vate key with Bob’s ECDH public pre-key to obtain the initial
+from the IDS to start a new session with any of their peers’                                            ECDH shared secret (depicted as “DH”).
+clients without requiring that client to be online. Pre-keys can                                           Alice proceeds to derive the initial root key and the associ-
+be reused in multiple sessions, but are only used upon session                                          ated initial chain key from the ECDH shared secret, the KEM
+start. PQ3 uses ML-KEM 768 key pairs for ephemeral KEM                                                  shared secret, and a zero-byte sequence, which stands in for
+keys and ML-KEM 1024 key pairs for KEM pre-keys.                                                        the previous root key. This is depicted on the far left of Fig-
+                                                                                                        ure 2 as “HKDF” in Step 1. She derives a message key from
+Session Establishment In the following, we assume, as be-                                               the initial chain key and encrypts her initial message with
+fore, that Alice wishes to establish a new session with Bob.                                            that message key. She sends Bob the ciphertext, her ECDH
+We depict an example run of PQ3 in Figure 2, specifically                                               ephemeral public key, the KEM encapsulation (with the lat-
+showing the key derivations of both parties. The figure shows                                           ter two shown in Figure 2), a hash of Bob’s public pre-keys
+four public-key ratchet steps (numbered 1-4). Step 1 illus-                                             (the pre-key hash), and a signature on all these elements and
+trates session establishment as explained next. Note that all                                           some additional authenticated data. The exact values of the
+messages sent between parties include a signature by the                                                authenticated data field are unspecified, and the field can be
+respective sender for authentication purposes using their long-                                         used freely by applications.
+term identity key. We omit signatures, long-term identity keys,                                            Bob uses that message to derive the initial root and chain
+the steps of the symmetric ratchet, and sent messages from                                              key. Bob’s actions are depicted in the right, green half of
+
+
+
+5020    34th USENIX Security Symposium                                                                                                             USENIX Association
+Figure 2. Bob first performs an IDS query to receive Alice’s         Bob then derives the next root key and the associated initial
+long-term identity public key (not depicted in Figure 2), which   chain key. He first combines his freshly generated ECDH
+he uses to verify the message signature. Bob then looks up        ephemeral private key with Alice’s ECDH ephemeral public
+the private parts of his pre-keys used by Alice, which are        key to obtain the new ECDH shared secret. He then uses the
+identified by the pre-key hash. Bob decapsulates the KEM          previous root key, the new ECDH shared secret, and either the
+encapsulation to obtain the KEM shared secret (the open           new KEM shared secret or a zero-byte sequence (depending
+lock symbol in Step 1), and combines Alice’s ECDH public          on whether Bob performed Action (i)) to derive the next root
+ephemeral key with his ECDH private pre-key to establish the      key and associated initial chain key. He again derives a mes-
+ECDH shared secret (“DH” in Step 1). With these two values        sage key from that chain key to encrypt his message and sends
+(and the zero-byte sequence), Bob computes the initial root       Alice the following values: the ciphertext, his fresh ECDH
+and chain key (illustrated by “HKDF” in Step 1) and derives       ephemeral public key, optionally the new KEM encapsulation
+a message key from that chain key to decrypt the ciphertext.      (Action (i)), optionally his new KEM public key (Action (ii)),
+                                                                  and a signature on all the above.
+                                                                     Figure 2 depicts in Step 3 that Alice generates a new
+Symmetric Ratchet With a shared root key established,             ephemeral KEM public/private key pair and sends the corre-
+Alice can send any number of additional messages to Bob           sponding public key to Bob, i.e., Alice executes Action (ii)
+without the participants updating the root key. Nevertheless,     above. This means that Bob will execute Action (i) in Step 4.
+each of these messages will be encrypted with a distinct key         Overall, the cryptographic constructions used are hybrid:
+derived by symmetric ratcheting. Whenever a participant en-       all key derivations incorporating a KEM shared secret also
+crypts a message, they use the current chain key to derive a      involve classical secrets. This design entails (and we establish
+message key, and then ratchet the chain key forward by deriv-     this formally in our proofs) that PQ3’s security is at least as
+ing a new chain key from the previous one. PQ3 establishes        strong as when using classical cryptography alone. The re-
+per-message forward secrecy as soon as the previous chain         peated use of the KEM encapsulation in the protocol therefore
+and message keys are deleted, i.e., participants should only      strictly strengthens the protocol to provide post-compromise
+store the latest root and chain key. The symmetric ratchet,       security even against a “harvest now, decrypt later” adversary
+though, is only executed as long as the conversation’s direc-     who managed to access some KEM shared secret.
+tion does not change, i.e., as long as the current sender keeps
+sending. Whenever the current receiver wishes to respond,
+they perform a public-key ratchet instead.                        5     Security Proofs
+                                                                  In this section, we describe how we modeled PQ3 and proved
+Public-Key Ratchet Suppose, after receiving some mes-             its security using TAMARIN. We briefly introduce TAMARIN
+sages from Alice, that Bob wants to reply. This means that        (Section 5.1), describe our protocol model (Section 5.2), the
+the conversation changes direction, and whenever this hap-        formal security properties (Section 5.3), and our proofs (Sec-
+pens clients perform the public-key ratchet. Every public-key     tion 5.4). Our protocol model covers PQ3 in its full complex-
+ratchet updates the root key and derives a new, initial chain     ity, including its nested loops, all its cryptographic primitives,
+key. The steps taken to derive these new keys are similar to      and their combinations. We discuss limitations and proof ef-
+the steps taken during session establishment. Figure 2 illus-     fort in Section 5.5. All our formal models and proofs are
+trates (next to session establishment) three further public-key   openly accessible on Zenodo [25].
+ratchet steps (numbered 2-4).
+   To perform the public-key ratchet, Bob first generates a
+                                                                  5.1    Background on Tamarin
+fresh ECDH ephemeral public/private key pair. Depending
+on the conversation’s state, Bob may additionally perform         TAMARIN works in the symbolic model of cryptography,
+either of the following two actions: (i) use the encapsulation    which supports a high degree of automation when construct-
+algorithm to produce a new KEM shared secret and cipher-          ing proofs. TAMARIN uses labeled multiset rewriting rules to
+text (for decapsulation by Alice), or (ii) generate a new KEM     model setup assumptions and the behavior of protocol partici-
+ephemeral public/private key pair. Action (i) is performed        pants. The participants play in so-called roles, where the pos-
+whenever Bob’s peer, Alice, performed Action (ii) in the pre-     sible actions of each role are given by sets of rules. TAMARIN
+vious public-key ratchet. To save bandwidth, Action (ii) need     verifies security properties with respect to an active network
+not always be performed. Instead, a custom heuristic deter-       adversary who can read, intercept, reorder, replay, and send
+mines when a client refreshes its KEM keys. The heuristic         messages. In addition to this built-in adversary, modelers can
+accounts for the threat environment, performance, and other       give the adversary additional capabilities using explicit rules.
+requirements. As per iOS 17.4, PQ3 clients send a fresh KEM          Each rule has a premise and conclusion. These consist
+public key roughly every 50 messages or whenever they have        of (potentially persistent) facts, which store the terms that
+not sent a fresh KEM public key within a week [21].               TAMARIN manipulates and reasons about. The rules together
+
+
+
+USENIX Association                                                                   34th USENIX Security Symposium           5021
+specify an infinite-state transition system. Each state of this    keys (rule UserKeyGen), and IDS queries (rule QueryIDS).
+transition system includes the protocol-state associated with      These are setup rules, which are the same for all participants,
+each role instance, the adversary’s knowledge, all messages        independent of whether they start a session as the sender or
+being sent on the network, and more. To apply a rule, the facts    receiver. The second and third part model the adversary’s
+in its premise must be found in the current global state. When     capabilities and PQ3’s protocol flow respectively.
+a rule is applied, all non-persistent facts appearing in the          In our model of the adversary’s capabilities, we allow the
+premise of the rule are removed from the state and instances       adversary to compromise every private, root, chain, and mes-
+of all facts in the conclusion of the rule are added.              sage key through dedicated reveal-rules, unless our security
+   All rules are labeled and TAMARIN reasons about traces,         lemmas explicitly forbid a certain key to be revealed. Addi-
+which are sequences of the instantiated rules’ labels. For this,   tionally, we model the “harvest now, decrypt later” capabil-
+TAMARIN supports a subset of first-order logic to specify          ity as follows. Whenever participants generate a non-post-
+the properties one then proves. Furthermore, formulas in this      quantum-secure key, like a fresh ephemeral ECDH private
+logic can also be used to specify restrictions on which traces     key, our model saves the key in a persistent state fact (i.e., a
+TAMARIN should consider when proving theorems. Restric-            fact that is not consumed when it is used in a rule’s premise).
+tions can be used, for example, to state that a participant        The adversary can then access any secrets stored this way af-
+performs a certain check, e.g., signature verification, in which   ter the rule PQAttackerStart is applied, but from that point
+case traces with failed checks would be excluded.                  on, no honest participant runs PQ3.
+   To model different cryptographic primitives, TAMARIN               Our model of PQ3’s protocol flow is depicted as the big
+supports a number of built-in equational theories, for example,    blue box in Figure 3. The left-hand side depicts all sender-
+for symmetric encryption and message signing. The user can         related rules, the right-hand side all receiver-related rules,
+additionally define their own equational theories.                 and in the center is a Session fact that stores all information
+   TAMARIN reasons using backwards search. Starting from           needed to send and receive messages. For example, a Session
+the protocol’s specification, it negates the property to be        fact stores a participant’s most recently generated ECDH and
+verified and searches for a trace representing an attack. If       KEM private keys and the corresponding public keys of their
+there cannot exist any such trace, then the property is proven.    peer, as well as any derived root and chain keys.
+Internally, TAMARIN uses constraint solving, and supports             A new session is started by applying one of the rules
+both an automatic mode and an interactive mode. Each step          SessionStartAsSender or ReceiverStart. These are the
+is machine-checked, using sound and complete proof rules.          only two rules that only produce and do not consume a
+However, as the underlying problem is undecidable, there is        Session fact. Most other rules update a session, i.e., they
+no guarantee of termination. Users can help TAMARIN con-           consume and produce a Session fact, and they can be ap-
+struct proofs in an interactive mode, where again the prover       plied arbitrarily many times per session. After a new session
+checks each proof step. Users can also help TAMARIN by             has started, one of two things can happen. Either the conver-
+specifying auxiliary properties that can be proven once and        sation does not change direction and then both participants
+for all and that can be reused in larger proofs.                   will apply the symmetric ratchet rules, or the conversation
+   Finally, TAMARIN also supports a form of induction. This        changes direction and the public-key ratchet rules are applied.
+is essentially an induction on the length of a trace with a           When being the receiver, a participant may non-
+distinguished special last timepoint. Timepoints in general        deterministically choose to become sender. When they do,
+provide an order on the steps in the protocol. For the special     they perform the public-key ratchet. Depending on whether
+last timepoint, the property must be proven, with it being         their peer had sent them a new KEM public key previously,
+assumed at all previous timepoints. We explain TAMARIN’s           they may additionally encapsulate a new KEM shared secret.
+induction scheme more detailed in Appendix A.1.1.                  Also, the new sender may non-deterministically send a new
+                                                                   KEM public key themself to their peer.
+5.2    Protocol Model                                                 A participant changes from the sender to the receiver role
+                                                                   when they receive a new message while being in the sender
+We used TAMARIN to comprehensively model PQ3 as de-                state. When a participant becomes the receiver, they perform
+scribed in Section 4.2. Our model comprises a set of rules         the public-key ratchet as well. In one of the two rules, they do
+and restrictions, modelling PQ3 as a state transition system,      so using a decapsulated KEM shared secret, and in the other
+together with an equational theory, modelling cryptographic        rule they use a zero-byte sequence instead.
+primitives. In this section, we describe the rules and restric-       Intuitively, one can consider our model as implementing
+tions and refer to Appendix B for details on our equational        two nested loops. First, there is the outer, public-key ratchet
+theory. The full protocol model is provided on Zenodo [25].        loop where participants generate new ephemeral ECDH secret
+   We provide an overview of our model’s protocol rules in         keys and derive root and chain keys. Second, there is the inner,
+Figure 3. Our formal model has three parts. The first part         symmetric ratchet loop where participants derive message
+models the generation of long-term signing keys and pre-           keys and send messages. The symmetric ratchet loop always
+
+
+
+5022    34th USENIX Security Symposium                                                                      USENIX Association
+                                       UserKeyGen             QueryIDS
+                                                                                                             Figure 3: Overview of our formal model. Rect-
+                                                                                                             angles denote rules and ellipses denote facts,
+                                                                                                             with their respective name printed inside. Ar-
+            Out        SessionStartAsSender                              ReceiverStart          In
+                                                                                                             rows denote fact consumption and generation
+                                                                   ReceiveSymmetricRatc                      or rule transition. The white rectangle around
+            Out        SendSymmetricRatchet         Session                                     In
+                                                                           het
+                                                                                                             Some/NoFreshKemSk denotes that either of
+            Out
+                        PKRatchetNewSender                         PKRatchetNewReceiver
+                                                                                                In
+                                                                                                             the rules is applied non-deterministically. The
+                           SomeNewKemSS                                SomeNewKemSS
+                                                                                                             rule PQAttackerStart can be applied at any
+            Out
+                        PKRatchetNewSender                         PKRatchetNewReceiver
+                                                                                                In           point. When this happens, protocol execution
+                            NoNewKemSS                                  NoNewKemSS
+                                                                                                             halts (modeling a “harvest now, decrypt later”
+                  SomeFreshKemSk   NoFreshKemSk
+                                                                                                             adversary) and thereafter the rule PQAttacker
+                                                                                                             can be applied, which reveals any non-post-
+                                                                                                             quantum-secure secret to the adversary. This
+                                              PQAttackerStart            PQAttacker       Out                figure omits rules that reveal key material.
+
+
+
+runs within one iteration of the public-key ratchet loop.                                            • The recipient’s long-term identity key before the message
+                                                                                                       msg was sent (line 8). In this case, the adversary could gen-
+                                                                                                       erate a fresh ECDH ephemeral and KEM encapsulation key
+5.3     Properties Specified                                                                           and send them to the messaging partner in question. This
+5.3.1    Secrecy                                                                                       attack allows the adversary to carry out all communication
+                                                                                                       in their victim’s stead.
+PQ3 aims to satisfy three secrecy properties: message se-
+crecy, forward secrecy, and post-compromise security. In our                                         • One of the ephemeral ECDH secret keys, used to derive
+formalization, we combine all three into a single property.                                            the most recently established ECDH shared secret, and the
+This property is formulated as a formula, called a lemma in                                            KEM shared secret (lines 9-15). This allows the adversary
+TAMARIN, as one must prove that it holds for the protocol.                                             to perform a public-key ratchet step themself.
+   Figure 4 contains our secrecy lemma.2 It states that the                                            The adversary can learn an ECDH secret key either through
+adversary cannot know a message (line 4) that has been pre-                                            direct compromise (lines 10-11) or using a quantum com-
+viously sent (line 2), unless the adversary succeeds in at least                                       puting attack should a sufficiently powerful quantum com-
+one of four kinds of compromise, listed below. The kinds of                                            puter be available (line 9). The compromise of the sender’s
+compromise are formulated with respect to the keys refer-                                              ECDH pre-key has no effect because a sender will always
+enced by the SessionSecrets fact. This fact lists all keys                                             sample a fresh ECDH ephemeral key upon session start.
+and shared secrets used by the sender when sending the re-
+spective message, e.g., their most recently sampled ephemeral                                          The KEM shared secret can be effectively compromised in
+ECDH public key (myEcdhPk) and the most recently encapsu-                                              two ways. First, the adversary can compromise the KEM
+lated KEM shared secret (kemSS). We sketch a possible attack                                           secret key used for encapsulation (lines 12-13). Second, the
+for each kind of compromise to show that dropping any but                                              adversary can circumvent the need to compromise the KEM
+the first disjunct yields a counterexample. To learn a message                                         shared secret by compromising a root key derived after that
+sent with PQ3, the adversary must compromise at least one of:                                          KEM shared secret was established (lines 14-15). In the
+                                                                                                       latter case, if the adversary additionally learns an ECDH
+• The message key used during encryption from either the                                               secret key used in a subsequent public-key ratchet step, they
+  receiver or sender (line 5 in Figure 4). Should the adver-                                           can derive the respective initial chain key themself.
+  sary learn the message key, they could simply decrypt the                                            In addition to the ECDH and KEM shared secret, the adver-
+  message themself.                                                                                    sary also requires the root key from the previous public-key
+                                                                                                       ratchet to perform the current public-key ratchet themself.
+• One of the chain keys used in the symmetric ratchet to                                               Our threat model, however, permits this root key to be re-
+  derive the message key from either the receiver or sender                                            vealed to the adversary anyway.
+  (lines 6-7; a << b denotes that a is a subterm of b [17]).
+  Should the adversary learn one of these chain keys, they                                              Recall that our threat model assumes that the adversary
+  could simply derive the message key themself.                                                      can access all key material unless explicitly forbidden. Our
+   2 In the following, we will sometimes shorten the names of facts in lem-                          secrecy lemma only forbids the adversary to access key mate-
+mas compared to the source files, e.g., RevealIdentityKey may become                                 rial related to sending the message in question. All key-reveal
+RevealIDKey.                                                                                         assumptions in lines 5-15 use the key material introduced
+
+
+
+USENIX Association                                                                                                     34th USENIX Security Symposium          5023
+1  All id me them msg ad myEcdhPk theirEcdhPk kemSS encapPk rk chainKey msgKey #t.
+2        ( Sent (id ,_ ,me , them ,msg , ad ) @ t
+ 3       & SessionSecrets ( myEcdhPk , theirEcdhPk , kemSS , encapPk ,rk , chainKey , msgKey ) @ t)
+ 4   ==>   ( not Ex #x. K( msg ) @ x)
+ 5       | (Ex #x. RevealMessageKey (me , msgKey ) @ x) | (Ex #x. RevealMessageKey ( them , msgKey ) @ x)
+ 6       | (Ex ckC #x. RevealChainKey (me , ckC ) @ x & ( ckC << chainKey | ckC = chainKey ))
+ 7       | (Ex ckC #x. RevealChainKey ( them , ckC ) @ x & ( ckC << chainKey | ckC = chainKey ))
+ 8       | (Ex #x. RevealIDKey ( them ) @ x & x < t)
+ 9       | ( ( (Ex #x. PQAttack () @ x)
+10            | (Ex #x. RevealECDHPreKey ( them , theirEcdhPk ) @ x)
+11            | (Ex #x. RevealECDHKey (id ,me , myEcdhPk ) @ x) | (Ex #x. RevealECDHKey (_ , them , theirEcdhPk ) @ x ))
+12         & ( (Ex #x. RevealKemKey (me , encapPk ) @ x) | (Ex #x. RevealKemKey ( them , encapPk ) @ x)
+13            | (Ex #x. RevealKemPreKey (me , encapPk ) @ x) | (Ex #x. RevealKemPreKey ( them , encapPk ) @ x)
+14            | (Ex k #x. RevealRootKey (me , kemSS ,k) @ x & k << rk )
+15            | (Ex k #x. RevealRootKey ( them , kemSS ,k) @ x & k << rk )))
+
+
+    Figure 4: Secrecy lemma. The lemma formalizes that if a message msg was sent using the secret values referenced by
+    SessionSecrets, then either the message cannot be known by the adversary (line 4) or the adversary compromised a specific
+    combination of keys (lines 5ff.). Section 5.3.1 explains this lemma, line-by-line, in further details.
+
+
+                 Key Usage                                              1 All id ecdhKey1 ecdhKey2 m # t1 # t2 # t3 .
+                             𝑘!    𝑘"       𝑘#      𝑘$                  2       ( SessionSecrets ( ecdhKey1 , ...) @ t1
+                                                                        3       & SessionInfo (id , ...) @ # t1
+                                                                        4       & K( ecdhKey1 ) @ t2
+           Key Compromise
+                                    𝑡!                   𝑡"             5       & SessionSecrets ( ecdhKey2 , ...) @ t3
+                                                                        6       & Sent (id , ... , m , ...) @ t3
+    Figure 5: A participant derives four initial chain keys (k1 -k4 )   7       & t3 < t1 )
+                                                                        8   ==>   ( not Ex #x. K(m)@#x)
+    over time and the adversary compromises k2 and k3 at times t1
+                                                                        9       | (...) // as in secrecy lemma
+    and t2 respectively. Independent of when it occurs (compare
+    t1 with t2 ), key compromise has a similar and limited effect:
+    The adversary can only learn messages sent before the next              Figure 6: Sketch of a potential formalization of ECDH key for-
+    initial chain key is derived (the shaded areas).                        ward secrecy. Observe that this property is strictly weaker than
+                                                                            our secrecy lemma in Figure 4 because we only add conjuncts
+                                                                            to the implication’s left-hand side. Thus, this formalization of
+    in line 3, which in turn is bound to the Sent event in line 2           forward secrecy is implied by our secrecy lemma.
+    by the variable t. Thus, proving secrecy establishes forward
+    secrecy and post-compromise security as we explain next.
+       For long-term identity keys, we show that PQ3 provides               ally assumes that the adversary learned a relevant ECDH key
+    forward secrecy in that all messages exchanged prior to the             derived before the current message was sent. This modified
+    compromise of such a key remain secure (see line 8). For                lemma accurately models ECDH key forward secrecy, but it is
+    most encryption keys (exceptions and details below), we es-             strictly weaker than our secrecy lemma. Formally, this is the
+    tablish forward secrecy and post-compromise security in that            case because we only strengthen the implication’s left-hand
+    to compromise a given message, the adversary must learn the             side. We also cannot drop any disjunct on the implication’s
+    respective key used for that message and the compromise of              right side because, if we could, our secrecy lemma would
+    past or future keys has no effect. Note that “past” and “future”        not be provable (we sketched attacks on the previous page).
+    here refer to the points in time when a key was used, not when          Intuitively speaking, the adversary does not gain more power
+    it was compromised. In particular, this allows us to establish          when we explicitly add the event that they learn a respective
+    post-compromise security guarantees even after the adver-               ECDH key to the trace because we assume that the adversary
+    sary obtained a quantum computer and participants stopped               can access all keys by default anyway.
+    running the protocol. Although participants will no longer                 In general, we establish per-key forward secrecy and post-
+    rotate keys, as they no longer run the protocol, they will have         compromise security upon key rotation. For some keys, for-
+    self-healed from the compromise of any other key than the               ward secrecy and post-compromise security are only estab-
+    most recently used one. For an illustration, see Figure 5.              lished under further constraints. In these cases, our secrecy
+       To provide an example for why our secrecy lemma entails              lemma precisely defines the point in time at which forward-
+    forward secrecy and post-compromise security, consider the              secrecy or post-compromise security are established. We list
+    lemma modelling ECDH key forward secrecy in Figure 6. The               all forward secrecy and post-compromise security guarantees
+    lemma resembles our secrecy lemma in Figure 4, but addition-            entailed by our secrecy lemma below and, wherever necessary,
+
+
+
+    5024    34th USENIX Security Symposium                                                                           USENIX Association
+describe the constraints on these guarantees. When the adver-     1 All id i s r m ad #t.
+sary does not possess a quantum computer, PQ3 provides:           2     Received (id , i , s , r , m , ad ) @ t
+                                                                  3 ==> ( (Ex #x. Sent (_ , i , s , r , m , ad ) @ x & x <t)
+                                                                  4     | (Ex #x. RevealIDKey (s) @ x & x <t ))
+• Long-term identity key forward secrecy.
+
+• ECDH ephemeral key forward secrecy and post-                        Figure 7: Agreement lemma. For every message-receive event,
+  compromise security.                                                there must be a corresponding message-send event for which
+                                                                      the participants agree on the authenticated data, sender, re-
+• ECDH pre-key post-compromise security as soon as a new
+                                                                      ceiver, and message counter, unless the sender’s long-term
+  ECDH ephemeral key is generated by a session’s initial
+                                                                      identity key was previously compromised.
+  recipient.
+
+   In practice, PQ3 also provides forward secrecy for ECDH        1  All s1 s2 r1 r2 m ad ecdhPk1 mk1 ecdhPk2 mk2 # t1
+pre-keys as it requires that participants update their pre-keys   2    # t2 .
+                                                                   3      ( Received (_ ,_ ,s1 ,r1 ,m , ad ) @ t1
+registered at the IDS every 2 weeks. As soon as a client           4      & SessionSecrets ( ecdhPk1 ,_ ,_ ,_ ,_ , mk1 ) @ t1
+registers a new pre-key, they establish forward secrecy for all    5      & Received (_ ,_ ,s2 ,r2 ,m , ad ) @ t2
+previous session-start messages sent to them.                      6      & SessionSecrets ( ecdhPk2 ,_ ,_ ,_ ,_ , mk2 ) @ t2 )
+                                                                   7 ==> ( ( t1 = t2 )
+   Should the adversary at some point break all non-ML-KEM         8      | ( ecdhPk1 = ecdhPk2 & mk1 = mk2
+keys using a quantum computer, PQ3 still provides:                 9          & s1 = s2 & r1 = r2
+                                                                  10          & Ex #x. ECDHPreKeyGen (r1 , ecdhPk1 ) @ x)
+• ML-KEM key post-quantum forward secrecy and post-               11      | (Ex #x. RevealIDKey ( s1 ) @ x & x < t1 )
+  compromise security.                                            12      | (Ex #x. RevealIDKey ( s2 ) @ x & x < t2 ))
+
+• Chain and message key forward secrecy and post-
+                                                                      Figure 8: Injective agreement lemma. It formalizes that for
+  compromise security. These properties are established un-
+                                                                      two message-receive events with the same message m and
+  conditionally except for chain key post-compromise secu-
+                                                                      authenticated data ad, these events must be the same (line 7),
+  rity, which is established upon the next public-key ratchet.
+                                                                      or they were sent using the recipients pre-key (lines 8f.), or
+  PQ3 establishes these properties even when the adversary
+                                                                      one sender’s identity key was compromised (lines 11ff.).
+  possesses a quantum-computer because these keys depend
+  on KEM-encapsulated secrets.
+
+   Note that working out and rigorously proving such fine-               Our formalization of agreement is split into two TAMARIN
+grained notions of secrecy is nontrivial and one strongly ben-        lemmas (Figures 7 and 8). The first lemma formalizes agree-
+efits here from a proof assistant. Overall, our TAMARIN proof         ment: Whenever a participant r receives a message m and
+of secrecy establishes that, in the absence of the sender or          authenticated data ad, apparently from s and with message
+recipient being compromised, all keys and messages trans-             counter i, then either s had previously sent m to r with counter
+mitted are secret. The secrecy property is fine-grained in that       i or that senders’ long-term identity has been compromised
+compromises can be tolerated in a well-defined sense where            in the past.
+the effect of the compromise on the secrecy of data is limited           The second lemma formalizes that the agreement is
+in time and effect as described above. Moreover, we show              injective [26], meaning that there is a one-to-one mapping
+that PQ3 combines the security of both classical and post-            from receive-events to send-events. This lemma states that
+quantum-secure cryptographic primitives. Hence, to break              for every two honest message-receive events with the same
+PQ3 one must break both.                                              message and authenticated data, these events must either be
+                                                                      identical (#t1 = #t2), or a recipient’s ECDH pre-key rather
+                                                                      than an ephemeral key was used to derive the message key
+5.3.2   Agreement
+                                                                      (lines 8-10), or either of the senders were compromised.
+   In contrast to secrecy, formalizing agreement is much sim-         Compromise of one sender suffices to violate injective
+pler. This is because PQ3 relies on the participants’ long-term       agreement because agreement does not entail secrecy. The
+identity keys’ security to provide agreement. Compromise              adversary could learn a message by compromising the ECDH
+of a participant’s long-term identity key is both necessary           and KEM keys of the session. They could then send the
+and sufficient to break agreement. It is necessary because an         message again, which requires the compromise of a long-term
+attacker must generate a message signature when trying to             identity key, however, to produce the necessary signature.
+spoof a sender, and it is sufficient because a sender need not           During our proof efforts, we noticed a trivial violation of
+compromise the sender’s encryption keys to send an inau-              injective agreement, which is covered by lines 8-10. PQ3 can-
+thentic message; they can simply generate their own and send          not provide injective agreement for session-start messages
+them alongside the faked message.                                     (and messages sent as part of the symmetric ratchet directly
+
+
+
+USENIX Association                                                                       34th USENIX Security Symposium         5025
+thereafter) as pre-keys can be reused for session starts. Thus,         Lemma            Term                     Key Reveal Implications
+
+recipients will accept session-start messages multiple times.                             msg
+
+In practice, this case must be addressed by an application’s          MkCompromise      msgKey
+                                                                                                     (Ex #x. RevealMessageKey(me, msgKey) @ #x)
+
+                                                                                                   | (Ex #x. RevealMessageKey(them, msgKey) @ #x)
+session-handling layer, which defines under which conditions
+clients will accept session-start messages from devices they                                         (Ex ckC #x. RevealChainKey(me, ckC) @ #x
+
+                                                                                                      & (ckC << chainKey | ckC = chainKey))
+already have an existing session with. We shared this find-           CkCompromise      chainKey
+                                                                                                   | (Ex ckC #x. RevealChainKey(them, ckC) @ #x
+ing with Apple researchers who confirmed that the iMessage                                            & (ckC << chainKey | ckC = chainKey))
+
+session-handling layer indeed addresses this case. Put differ-                                       (Ex #x. RevealChainKey(me, suffix(rkCK)) @ #x)
+ently, our formal proofs highlight precisely the assumptions       RkSecretCompromise
+                                                                                                   | (Ex #x. RevealChainKey(them, suffix(rkCK)) @ #x)
+                                                                                          rkCK
+                                                                                         rkCK
+on session-handling needed to securely deploy PQ3.                   ECDHSS + KEMSS
+                                                                                                    (Ex rk #x. RevealRootKey(me, kemSS, rk) @ #x
+
+                                                                                                      & rk << prefix(rkCK))
+
+                                                                                                   | (Ex rk #x. RevealRootKey(them, kemSS, rk) @ #x
+5.4    Proofs & Proof Methodology                                                                     & rk << prefix(rkCK))
+
+                                                                                                   | ( (Ex ckC #x. RevealChainKey(me, ckC) @ #x
+We describe here our proofs and proof methodology for PQ3.                                              & ckC = suffix(rkCK))
+
+Our proof methodology applies to theories that include (possi-                                      & (...)) // required for lemma to be inductive
+
+                                                                                                   | ( (Ex ckC #x. RevealChainKey(them, ckC) @ #x
+bly nested) loops and for which trace formulas like secrecy or
+                                                                                                        & ckC = suffix(rkCK))
+authentication are to be proven. We present our methodology                                         & (...)) // required for lemma to be inductive
+
+more generally and with further details in Appendix A.                                              (Ex #x. RevealECDHPreKey(them, theirPk) @ #x)
+   We encountered two challenges when verifying PQ3. First,                                        | (Ex #x. RevealECDHKey(id, me, myPk) @ #x)
+
+PQ3 employs a nested loop. If not carefully handled, loops          ECDHSSCompromise     ecdhSS    | (Ex id2 #x. RevealECDHKey(id2, them, theirPk) @ #x)
+
+                                                                                                   | (Ex #x. RevealIdentityKey(them) @ #x & #x < #t1)
+result in prover non-termination as they are unrolled infinitely
+                                                                                                   | (Ex #x. PQAttack() @ #x)
+often. TAMARIN provides induction to address this prob-
+                                                                                                    (Ex #x. RevealKemKey(me, encapPk) @ #x)
+lem, but using induction correctly, especially when loops are                                      | (Ex #x. RevealKemKey(them, encapPk) @ #x)
+nested, requires postulating nontrivial auxiliary lemmas.           KemSSCompromise      kemSS     | (Ex #x. RevealKemPreKey(me, encapPk) @ #x)
+
+   Second, our threat model considers the leakage of “syn-                                         | (Ex #x. RevealKemPreKey(them, encapPk) @ #x)
+
+                                                                                                   | (Ex #x. RevealIdentityKey(them) @ #x & #x < #t1)
+thetic” key material, derived using a KDF, and our lemmas
+naturally must refer to this key material. When proving se-
+                                                                   Figure 9: Connection between Adversary-Construction Lem-
+crecy, we repeatedly encountered cases similar to the follow-
+                                                                   mas for Message Secrecy. Arrows denote logical implication.
+ing. TAMARIN would consider an honest session sending a
+                                                                   We omit two conjuncts in RkSecretCompromiseKEMSS that
+message, claiming that the adversary could get the decryption
+                                                                   are only required to prove the lemma by induction. We pro-
+key for this message (violating secrecy) from a completely
+                                                                   vide more details on these conjuncts in our formal model [25].
+unrelated session. We call such unrelated sessions ghost ses-
+sions. In this case, the non-trivial proof goal was to convince
+TAMARIN that the ghost session must be the same as the               our model’s adversary-construction lemmas. For example,
+honest session or the peer’s session. Note that other protocol       CkCompromise states that the adversary can only know a
+models typically only consider the leakage of “atomic” key           chain key if they know the value that gets split into the
+material, i.e., key material modelled as a fresh term.               root and chain key (rkCK), or they compromised this or a
+   To address these two challenges, our methodology uses             previous chain key.
+three kinds of auxiliary lemmas.
+                                                                      Loop-jump lemmas are the foundation for proving proper-
+ Loop-Jump Lemmas These lemmas allow one to skip un-               ties of models including nested loops. Without such lemmas,
+  rolling the steps of a (nested) loop and jump to a “relevant”    TAMARIN’s induction fails to prove even the simplest proper-
+  point in a loop, for example, its beginning or where a spe-      ties of an outer loop. The induction hypothesis will not apply
+  cific term was introduced.                                       in cases where a step in the outer loop is directly preceded
+ Variable-Linking Lemmas These lemmas establish that               by a step in an inner loop. Moreover, adversary-construction
+  for two instances of the same fact using two variables a         lemmas are required to deal with the complicated terms that
+  and b, if both facts have the same value for a, they must        are computed in nested loops, and variable-linking lemmas
+  have the same value for b.                                       are required to address ghost sessions.
+                                                                      We proved secrecy for PQ3 using a series of adversary-
+ Adversary-Construction Lemmas These lemmas formal-                construction lemmas, depicted in Figure 9, which in turn
+  ize how an adversary could construct a term. Typically,          were proven using the loop-jump and variable-linking lem-
+  the adversary can either construct it or access it using         mas in Figures 10 and 11. Concretely, when proving secrecy,
+  a dedicated reveal rule (which in turn typically implies         TAMARIN first negates the original lemma and tries to con-
+  a contradiction to the threat model). Figure 9 depicts           struct a trace satisfying the negated lemma, i.e., TAMARIN
+
+
+
+5026    34th USENIX Security Symposium                                                                                        USENIX Association
+                                          KemSSOrigin                      cent public key ratchet (switching from sender to receiver or
+                                         RkFixesKemSS
+                                                                           receiver to sender respectively) and the session start.
+                  MkCkRel.    CkRkRel.
+                                                    kemSS                     We proved both agreement lemmas much like we proved
+             msgKey     chainKey     rootKey                               secrecy, but proving agreement was much simpler. PQ3 pro-
+                                                    ecdhSS                 vides agreement by signing every message. When trying to
+                                         RkFixesEcdhSS                     prove non-injective agreement, TAMARIN immediately finds
+                                                                           that to violate agreement, the adversary must generate this
+Figure 10: Loop-Jump (orange) and Variable-Linking Lem-                    signature themself, which in turn requires access to the sign-
+mas (blue) Related to Key Derivation. Black arrows indicate                ing key. The rule that introduces the signing key, however,
+which variables are used to construct other variables, e.g., a             can directly be established using the SessionStart lemma
+message key is derived from a chain key.                                   as signing keys are queried only upon session start.
+                                                                              When attempting to prove injective agreement, TAMARIN
+          KemKeyOriginEncap                                                will start by constructing a trace with two honest receive
+          KemKeyOriginDecap
+                                                                           events for the same message. Using variable-linking lem-
+ MaybeNewKemKeyOrigin   encapPk                   ECDHSkOrigin             mas, we can establish that these two sessions must use the
+                                                                           same ECDH shared secret, and using the respective loop-
+                        theirNewKemPk                        myEcdhPk
+         kemSS                                 ecdhSS                      jump lemmas, we can jump to the rule instantiation where
+                                                             theirEcdhPk
+                        theirKemPk                                         the receiver generated their latest ECDH ephemeral key. This
+    TheirKemKeyOrigin   myKemPk                   ECDHSkOrigin
+                                                                           allows TAMARIN to derive that the two receive events must
+                                                                           have happened in the same session (unless a pre-key was
+            MyKemKeyOrigin                                                 used; but this case is addressed in the lemma directly).
+                                                                              Finally, we only use six auxiliary lemmas not fitting
+Figure 11: Loop-Jump Lemmas (orange) Related to Establish-                 the categories defined above. These lemmas simply limit
+ing Shared Secrets. Black arrows indicate which key material               TAMARIN’s search space to reduce proof construction time.
+can be used to establish which shared secret.                              For example, they show that certain events (like session start)
+                                                                           can only occur once, or establish well-formedness conditions
+tries to construct a trace where a message has been sent and               (for example, that the root key is a subterm of the chain key).
+the adversary knows it. By solving for how the adversary
+could learn the message, TAMARIN deduces that the adver-
+sary must know the message key used for encryption. This
+                                                                           5.5     Discussion
+allows us to apply the first adversary-construction lemma                  5.5.1   Scope of Analysis
+MkCompromise. This lemma expresses that the adversary
+can only know the message key if they either know the re-                  We do not consider session handling, long-term identity or
+spective chain key (allowing us to apply the next adversary-               pre-key rollover, and only consider group messaging implic-
+construction lemma) or if they access a reveal rule (contra-               itly. Our analysis covers the protocol design as described in
+dicting our threat model assumptions directly). In the case                the documentations we received from Apple. PQ3’s imple-
+where the adversary knows a respective smaller term, we can                mentation is not part of our analysis. Furthermore, as our
+apply the next adversary-construction lemma, etc. Finally, the             analysis is based on symbolic models, it abstracts away some
+lemmas ECDHSSCompromise and KemSSCompromise directly                       details of the concrete implementation, like message lengths
+contradict the threat model.                                               and some algorithmic details of the ciphers used.
+   We proved these adversary-construction lemma using the                     We did not model session handling as a specification of
+loop-jump and variable-linking lemmas depicted in Fig-                     iMessage’s session handling was not available to us. More-
+ures 10 and 11. A sequence of variable-linking lemmas                      over, PQ3 is not limited in its use to iMessage. Different
+(depicted in blue) connect message to chain to root keys                   applications may have different requirements on their session
+and to the respective KEM shared secret and ECDH shared                    handling. Studying PQ3 in isolation is therefore desirable in
+secret (Figure 10). Loop-jump lemmas (depicted in or-                      its own right.
+ange) then connect the shared secrets to the asymmetric                       A security analysis of group aspects, such as members
+key material used to establish them (Figure 11). This al-                  joining or leaving groups, is not part of PQ3 as it is a device-
+lows TAMARIN to deduce that access to the shared secret                    to-device messaging protocol. In practice, group messaging
+requires access to the respective private key material. Be-                can be implemented using PQ3 by sending messages via pair-
+yond the lemmas depicted in Figures 10 and 11, we only use                 wise runs of PQ3 to all group members. Such functionality
+the three loop-jump lemmas RootKeyConnectionReceive,                       is provided by an application’s session-handling layer and is
+RootKeyConnectionSend, and SessionStart, which jump                        thus outside of our analysis. iMessage implements group mes-
+from an instance of the symmetric ratchet to the most re-                  saging using multiple, individual device-to-device sessions,
+
+
+
+USENIX Association                                                                            34th USENIX Security Symposium         5027
+and our analysis establishes the security of each such session.    enhanced models of cryptographic primitives, such as those
+  Beyond the limitations just mentioned, our formal model          suggested by [20, 16, 12, 15].
+incorporates all details that were part of the documentation
+provided to us by Apple. In particular, we did not abstract
+                                                                   Acknowledgments
+away any protocol steps that participants may take.
+                                                                   This work was supported by Apple Inc. The Werner Siemens-
+5.5.2   Proof Effort                                               Stiftung (WSS) provided funding for Felix Linker’s Doctorate
+                                                                   as part of the Centre for Cyber Trust (CECYT). We thank both
+Our TAMARIN model comprises 32 lemmas in total. Next to            for their support.
+the auxiliary lemmas used to prove secrecy and agreement
+(Section 5.4), our model includes a sources lemma, which aids
+TAMARIN in precomputation steps, and two executability lem-        Ethics Discussion
+mas. Executability lemmas effectively “sanity check” a proto-
+                                                                   PQ3 will be used by billions of users and proving its secu-
+col specification by establishing that the participants can run
+                                                                   rity benefits these users. We have found no attacks that would
+the protocol without adversary involvement. This enhances
+                                                                   warrant responsible disclosure or could put users at risk. More-
+our confidence that the protocol model faithfully represents
+                                                                   over, the description of PQ3 facilitates future research on its
+the protocol and that its properties do not hold trivially.
+                                                                   security.
+   All proofs are guided by custom proof heuristics, imple-
+mented in Python, and finding the right heuristics to suc-
+cessfully construct proofs required substantial efforts. For       Open Science Policy
+example, checking the proof for the lemma formalizing in-
+jective agreement (Section 5.3.2) takes around 7 hours and         Our formal model, proofs, and a pseudocode specification of
+requires 20 GB of RAM on a server using two Intel Xeon             PQ3 Messaging Protocol as well as case studies illustrating
+CPU E5-2650 v4 @ 2.20GHz. The proofs of other lemmas               our proof methodology (see Appendix A) are available at
+require up to 100 GB of RAM to be checked. Overall, we             [25].
+estimate that proving PQ3 took around 2.5 person-months of
+work.                                                              References
+                                                                    [1]   Joël Alwen, Sandro Coretti, and Yevgeniy Dodis. “The
+6   Conclusions                                                           Double Ratchet: Security Notions, Proofs, and Modu-
+                                                                          larization for the Signal Protocol”. In: Advances in
+We have used TAMARIN to formally verify the device-to-
+                                                                          Cryptology – EUROCRYPT 2019. 2019. DOI: 10 .
+device messaging protocol PQ3. Our analysis is based on
+                                                                          1007/978-3-030-17653-2_5.
+machine-checked proofs of fine-grained secrecy and authenti-
+cation properties. This provides a high degree of assurance         [2]   Apple Security Engineering and Architecture (SEAR).
+that PQ3 functions securely against an active network ad-                 Advancing iMessage Security: iMessage Contact Key
+versary who can selectively compromise parties, even when                 Verification. Oct. 2023. URL: https : / / security .
+sufficiently powerful quantum computers become available.                 apple . com / blog / imessage - contact - key -
+Additionally, the properties we prove give a detailed account             verification/ (visited on 01/12/2024).
+of the impact that the compromise of every individual key has.      [3]   Karthikeyan Bhargavan, Abhishek Bichhawat, Quoc
+Lastly, we show that TAMARIN is up to the task of reasoning               Do, Pedram Hosseyni, Ralf Küsters, Guido Schmitz,
+about complex protocols with nested loops, and we have given              and Tim Würtele. “DY* : A Modular Symbolic Verifi-
+a general methodology for doing this.                                     cation Framework for Executable Cryptographic Pro-
+                                                                          tocol Code”. In: 6th IEEE European Symposium on
+Future work Of particular interest would be the formal                    Security and Privacy (EuroS&P). Sept. 2021. DOI:
+analysis of PQ3 in conjunction with session handling, as im-              10.1109/EuroSP51992.2021.00042.
+plemented for iMessage. Whether PQ3’s security guarantees           [4]   Karthikeyan Bhargavan, Charlie Jacomme, Franziskus
+as established here fully transfer to iMessage remains an open            Kiefer, and Rolfe Schmidt. “Formal Verification of
+question. For example, [18] established that the Signal appli-            the PQXDH Post-Quantum Key Agreement Protocol
+cation may not provide post-compromise security although                  for End-to-End Secure Messaging”. In: 33rd USENIX
+the protocol does due to the implementation of session han-               Security Symposium. 2024. URL: https : / / www .
+dling (see Section 2.2). Furthermore, our formal model could              usenix . org / conference / usenixsecurity24 /
+be extended to account for IDS key roll-over, i.e., of long-term          presentation/bhargavan.
+identity and pre-keys, and it could be extended to incorporate
+
+
+
+5028    34th USENIX Security Symposium                                                                      USENIX Association
+ [5]   Alexander Bienstock, Jaiden Fairoze, Sanjam Garg,      [14] Katriel Cohn-Gordon, Cas Cremers, and Luke Garratt.
+       Pratyay Mukherjee, and Srinivasan Raghuraman. “A            “On Post-compromise Security”. In: 29th Computer
+       More Complete Analysis of the Signal Double Ratchet         Security Foundations Symposium (CSF). June 2016.
+       Algorithm”. In: Advances in Cryptology – CRYPTO             DOI : 10.1109/CSF.2016.19.
+       2022. 2022. DOI: 10 . 1007 / 978 - 3 - 031 - 15802 -   [15] Cas Cremers, Alexander Dax, Charlie Jacomme, and
+       5_27.                                                       Mang Zhao. “Automated Analysis of Protocols That
+ [6]   B. Blanchet. “A Computationally Sound Mechanized            Use Authenticated Encryption: How Subtle AEAD
+       Prover for Security Protocols”. In: 2006 IEEE Sympo-        Differences Can Impact Protocol Security”. In: 32nd
+       sium on Security and Privacy (S&P). May 2006. DOI:          USENIX Security Symposium. Aug. 2023. URL:
+       10.1109/SP.2006.1.                                          https : / / www . usenix . org / conference /
+ [7]   Bruno Blanchet. “Automatic Verification of Secu-            usenixsecurity23 / presentation / cremers -
+       rity Protocols in the Symbolic Model: The Verifier          protocols.
+       ProVerif”. In: Foundations of Security Analysis and    [16] Cas Cremers, Alexander Dax, and Niklas Medinger.
+       Design VII. 2014. DOI: 10.1007/978-3-319-10082-             “Keeping Up with the KEMs: Stronger Security No-
+       1_3.                                                        tions for KEMs and Automated Analysis of KEM-
+ [8]   Olivier Blazy, Ioana Boureanu, Pascal Lafourcade,           based Protocols”. In: Proceedings of the 2024 on ACM
+       Cristina Onete, and Léo Robert. “How Fast Do You            SIGSAC Conference on Computer and Communica-
+       Heal? A Taxonomy for Post-Compromise Security in            tions Security (CCS). Dec. 2024. DOI: 10 . 1145 /
+       Secure-Channel Establishment”. In: 32nd USENIX              3658644.3670283.
+       Security Symposium. 2023. URL: https : / / www .       [17] Cas Cremers, Charlie Jacomme, and Philip Lukert.
+       usenix . org / conference / usenixsecurity23 /              “Subterm-Based Proof Techniques for Improving the
+       presentation/blazy.                                         Automation and Scope of Security Protocol Analysis”.
+ [9]   Nikita Borisov, Ian Goldberg, and Eric Brewer. “Off-        In: 36th Computer Security Foundations Symposium
+       the-Record Communication, or, Why Not to Use PGP”.          (CSF). July 2023. DOI: 10.1109/CSF57540.2023.
+       In: Proceedings of the 2004 ACM Workshop on Privacy         00001.
+       in the Electronic Society. Oct. 2004. DOI: 10.1145/    [18] Cas Cremers, Charlie Jacomme, and Aurora Naska.
+       1029179.1029200.                                            “Formal Analysis of Session-Handling in Secure Mes-
+[10] Joppe Bos, Leo Ducas, Eike Kiltz, T Lepoint, Vadim            saging: Lifting Security from Sessions to Conversa-
+     Lyubashevsky, John M. Schanck, Peter Schwabe, Gre-            tions”. In: 32nd USENIX Security Symposium. 2023.
+     gor Seiler, and Damien Stehle. “CRYSTALS - Kyber:             URL : https : / / www . usenix . org / conference /
+     A CCA-Secure Module-Lattice-Based KEM”. In: 2018              usenixsecurity23 / presentation / cremers -
+     IEEE European Symposium on Security and Privacy               session-handling.
+     (EuroS&P). Apr. 2018. DOI: 10.1109/EuroSP.2018.          [19] Rune Fiedler and Felix Günther. Security Analysis of
+     00032.                                                        Signal’s PQXDH Handshake. 2024. URL: https://
+[11] Ran Canetti, Palak Jain, Marika Swanberg, and                 eprint.iacr.org/2024/702.
+     Mayank Varia. “Universally Composable End-to-            [20] Dennis Jackson, Cas Cremers, Katriel Cohn-Gordon,
+     End Secure Messaging”. In: Advances in Cryptology             and Ralf Sasse. “Seems Legit: Automated Analysis of
+     – CRYPTO 2022. 2022. DOI: 10.1007/978-3-031-                  Subtle Attacks on Protocols That Use Signatures”. In:
+     15979-4_1.                                                    Proceedings of the 2019 ACM SIGSAC Conference on
+[12] Vincent Cheval, Cas Cremers, Alexander Dax, Lucca             Computer and Communications Security (CCS). Nov.
+     Hirschi, Charlie Jacomme, and Steve Kremer. “Hash             2019. DOI: 10.1145/3319535.3339813.
+     Gone Bad: Automated Discovery of Protocol At-            [21] Frederic Jacobs. Invited Talk: Designing iMessage
+     tacks That Exploit Hash Function Weaknesses”. In:             PQ3: Quantum-Secure Messaging at Scale. Mar. 2024.
+     32nd USENIX Security Symposium. Aug. 2023. URL:               URL : https : / / www . youtube . com / watch ? v =
+     https : / / www . usenix . org / conference /                 RVbHElGe518 (visited on 05/29/2024).
+     usenixsecurity23/presentation/cheval.                    [22] Nadim Kobeissi, Karthikeyan Bhargavan, and Bruno
+[13] Katriel Cohn-Gordon, Cas Cremers, Benjamin Dowl-              Blanchet. “Automated Verification for Secure Messag-
+     ing, Luke Garratt, and Douglas Stebila. “A Formal             ing Protocols and Their Implementations: A Symbolic
+     Security Analysis of the Signal Messaging Protocol”.          and Computational Approach”. In: 2017 IEEE Euro-
+     In: 2017 IEEE European Symposium on Security and              pean Symposium on Security and Privacy (EuroS&P).
+     Privacy. Apr. 2017. DOI: 10.1109/EuroSP.2017.27.              Apr. 2017. DOI: 10.1109/EuroSP.2017.38.
+
+
+
+
+USENIX Association                                                             34th USENIX Security Symposium     5029
+[23] Hugo Krawczyk. “Cryptographic Extraction and Key         [35] Nik Unger, Sergej Dechand, Joseph Bonneau, Sascha
+     Derivation: The HKDF Scheme”. In: Advances in                 Fahl, Henning Perl, Ian Goldberg, and Matthew Smith.
+     Cryptology – CRYPTO 2010. 2010. DOI: 10.1007/                 “SoK: Secure Messaging”. In: 2015 IEEE Symposium
+     978-3-642-14623-7_34.                                         on Security and Privacy (S&P). May 2015. DOI: 10.
+[24] Ehren Kret and Rolfe Schmidt. The PQXDH Key Agree-            1109/SP.2015.22.
+     ment Protocol. Tech. rep. Revision 3. May 2023. URL:     [36] Nik Unger and Ian Goldberg. “Deniable Key Ex-
+     https : / / signal . org / docs / specifications /            changes for Secure Messaging”. In: Proceedings of
+     pqxdh/pqxdh.pdf.                                              the 22nd ACM SIGSAC Conference on Computer and
+[25] Felix Linker, Ralf Sasse, and David Basin. A Formal           Communications Security (CCS). Oct. 2015. DOI: 10.
+     Analysis of Apple’s iMessage PQ3 Protocol. Zenodo.            1145/2810103.2813616.
+     Jan. 2025. DOI: 10.5281/zenodo.14710688. (Vis-
+     ited on 01/23/2025).                                     A     Proof Methodology
+[26] G. Lowe. “A Hierarchy of Authentication Specifica-
+     tions”. In: Proceedings 10th Computer Security Foun-     In Section 5.4, we presented our proof methodology, special-
+     dations Workshop. June 1997. DOI: 10.1109/CSFW.          ized to how we applied it to the PQ3 Messaging Protocol.
+     1997.596782.                                             In this section, we will describe this methodology in more
+                                                              detail and in its generality: i.e., how one could apply it to
+[27] Moxie Marlinspike and Trevor Perrin. The X3DH
+                                                              other protocols with similar structure.
+     Key Agreement Protocol. Tech. rep. Revision 1. Nov.
+                                                                 TAMARIN provides general support for handling loops,
+     2016. URL: https : / / signal . org / docs /
+                                                              based on induction and injective facts, and we begin our ac-
+     specifications/x3dh/x3dh.pdf.
+                                                              count by explaining them. We afterwards introduce two min-
+[28] Simon Meier, Benedikt Schmidt, Cas Cremers, and          imal TAMARIN theories that illustrate the issues of nested
+     David Basin. “The TAMARIN Prover for the Symbolic        loops and ghost sessions (see Section 5.4), but on a smaller
+     Analysis of Security Protocols”. In: Computer Aided      and simpler scale. These theories will also help illustrate
+     Verification (CAV). 2013. DOI: 10.1007/978-3-642-        the reasoning behind the loop-jump, adversary-construction
+     39799-8_48.                                              and variable-linking lemmas that we have seen. Finally, we
+[29] Module-Lattice-based Key-Encapsulation Mechanism         present the resulting proof methodology.
+     Standard. Aug. 2023. DOI: 10 . 6028 / NIST . FIPS .
+     203.ipd.                                                 A.1     Handling Loops in TAMARIN
+[30] Michele Mosca and Marco Piani. Quantum Threat
+                                                              A.1.1   Induction
+     Timeline. Tech. rep. Global Risk Institute, Dec. 2023.
+     URL : https : / / globalriskinstitute . org /            TAMARIN analyzes formulas directly by backward search, as
+     publication/2023- quantum- threat- timeline-             explained in Section 5.1, or by induction. When TAMARIN
+     report/.                                                 attempts to prove a formula ϕ by induction, it rewrites it into
+[31] Vinnie Moscaritolo, Gary Belvin, and Phil Zimmer-        the form
+     mann. Silent Circle Instant Messaging Protocol. Tech.
+     rep. Dec. 2012. URL: https://netzpolitik.org/                              BC(ϕ) ∧ (IH(ϕ) =⇒ ϕ).
+     wp-upload/SCIMP-paper.pdf.                                  The first conjunct, BC(ϕ), is the base case, and it re-
+[32] Trevor Perrin and Moxie Marlinspike. The Dou-            quires proving ϕ on the empty trace. The second conjunct,
+     ble Ratchet Algorithm. Tech. rep. Revision 1.            IH(ϕ) =⇒ ϕ, is the induction step, which requires proving
+     Nov. 2016. URL: https : / / signal . org /               ϕ on the last element of the trace, where ϕ is assumed on all
+     docs / specifications / doubleratchet /                  previous steps of the trace. BC(ϕ) is defined as ϕ, where ev-
+     doubleratchet.pdf.                                       ery formula of the form f @i is replaced with ⊥. For example,
+[33] Benedikt Schmidt, Simon Meier, Cas Cremers, and          for a formulation of secrecy such as
+     David Basin. “Automated Analysis of Diffie-Hellman
+                                                                        ∀m,t.Sent(m)@t =⇒ ¬(∃x.K(m)@x) ,
+     Protocols and Advanced Security Properties”. In: 25th
+     Computer Security Foundations Symposium (CSF).           this replacement results in
+     June 2012. DOI: 10.1109/CSF.2012.25.
+[34] Douglas Stebila. Security Analysis of the iMessage                           ∀m,t.⊥ =⇒ ¬(∃x.⊥).
+     PQ3 Protocol. 2024. URL: https://eprint.iacr.
+     org/2024/357.                                               IH(ϕ) is defined as ϕ but every quantified temporal variable
+                                                              is asserted to not be the last time point. This is done using the
+
+
+
+5030   34th USENIX Security Symposium                                                                   USENIX Association
+special predicate last, which is true if and only if it is provided                                ⟹ #𝑖 ≠ #𝑗
+                                                                                                                                       #i
+the last time point as argument. For example, the induction
+                                                                                                                      Session(~i,…)
+hypothesis of secrecy as defined above would become
+                                                                                              #j
+                                                                                 Session(~i,…)
+                                                                                                                      Session(~i,…)
+∀m,t.Sent(m)@t =⇒ ¬(∃x.K(m)@x ∧ ¬last(x)) ∨ last(t).                                                                                   #k
+
+
+   After translating ϕ into its inductive form, TAMARIN at-           Figure 12: Illustration of a contradiction from an injective
+tempts to prove it as any other formula. Effectively, it attempts     instance. The solid arrow indicates premise consumption.
+to prove the base case and induction step separately, and the         Dashed arrows indicate time ordering, i.e., the rule at #j must
+induction hypothesis IH is made available (like an auxiliary          be applied after #i but before #k. The order of time points
+lemma) in the branch proving the induction step.                      requires that #j and #i must be unified as #k consumes a
+   In practice, induction is used to prove properties of proto-       session fact with the matching ID ~i. However, #j must occur
+cols with loops. However, one can only prove properties of            strictly after #i, which contradicts this unification occurence.
+loops by induction when the loops are expressed in terms of           There is a symmetric case where #j and #k must be unified
+facts that appear repeatedly in the protocol’s trace. Take the        because #j and #i share a premise.
+above translation of secrecy as an example. In the induction
+step, the induction hypothesis becomes effectively vacuous            Outer
+                                                                               kdf('0', ~x)        kdf(       , ~y)    kdf(    , '0')       kdf(       , ~z)   …
+as long as the fact Sent(m) only occurs at a last time point t.       Loop
+
+In that case, the second disjunct on the right-hand side of the                  h(       )          h(       )           h(       )          h(       )
+implication will apply, whereas one usually requires the first        Inner
+                                                                      Loop
+disjunct to apply to make progress on a proof. Only when we                           …                   …                    …                   …
+
+can introduce a new Sent fact in the trace that does not occur
+at the last time point can we use the induction hypothesis.                               Figure 13: Nested loop example.
+   In particular, and applied to loops, this means two things.
+(1) Induction can only be applied to formulas that express
+invariants of loops, but not to formulas that express something       • Whenever it occurs in a rule’s conclusion, either (a) its loop
+that holds after a loop has stopped. A loop will only end once,         identifier is freshly generated (the loop has started), or (b) it
+which makes it impossible to introduce a second end of the              occurs in the rule’s premise with the same loop identifier (a
+loop not occurring at the last time point. (2) Induction cannot         loop step is taken).
+be used to prove properties for outer loops without further              Injective facts allow TAMARIN to derive contradictions by
+auxiliary lemmas. When we attempt to prove properties of              exploiting that all injective facts with a shared loop identifier
+outer loops, TAMARIN will always also consider the case that          must be linearizable. In particular, a loop step can never occur
+a step in the outer loop was preceded by an inner loop of             between two directly connected loop steps (as illustrated in
+unbounded length. Also in these cases, the fact referenced in         Figure 12). It is possible to prove properties of loops without
+the induction hypothesis (the outer loop step) will only occur        using injective facts, but using injective facts can drastically
+at the last time point. For both of these reasons, induction          simplify proofs, so it is generally advisable to make use of
+must be applied with care and cannot be blindly applied to            this heuristic.
+prove arbitrary properties of protocols with loops.
+
+                                                                      A.2     Proof Methodology by Example
+A.1.2    Injective Facts
+                                                                      In what follows, we illustrate the challenges encountered
+Injective facts are commonly used to model loops in                   when constructing proofs about nested loops using three sim-
+TAMARIN. They are defined as facts that (for a fixed first            ple, minimal theories. We will introduce these theories and
+argument) can occur only once in the global state. We call            our proof methodology on an intuitive level. For full details,
+an injective fact’s first argument its loop identifier. If a fact     see our artifact that provides all the theory files [25].
+satisfies the following constraints, it is automatically detected
+as injective by TAMARIN:
+                                                                      Nested Loop Example Figure 13 provides an illustration
+                                                                      of a nested loop from the nested-loop theory in [25]. The
+• It is not a persistent fact.
+                                                                      loop models a participant’s key derivation similar to the key
+• Its loop identifier is a fresh term.                                derivation used in PQ3. The inner loop applies a hash function
+                                                                      repeatedly, using non-determinism to leave open how often,
+• It never occurs more than once in a rule’s conclusion with          to a value derived from a KDF, which we call the seed. The
+  the same loop identifier.                                           outer loop updates the seed. When the outer loop starts, the
+
+
+
+USENIX Association                                                                            34th USENIX Security Symposium                               5031
+seed is derived from a zero-byte sequence and a fresh value.
+At every outer-loop iteration, the seed is derived from the           h(~x)           h(    )         h(     )        h(     )       …
+previous seed and either a zero-byte sequence or a fresh value
+(determined non-deterministically). The adversary can access          Reveal?         Reveal?          Reveal?         Reveal?
+all fresh values used in this loop using a reveal oracle.
+   The key derivation in this theory is similar to the key deriva-                Figure 14: Revealing loop example.
+tion in PQ3 when focussing on KEM shared secrets. The
+inner loop abstracts from the chain and message key deriva-
+                                                                      Fresh Seed Source This lemma “jumps to” the step in the
+tion, while the outer loop abstracts from establishing new
+                                                                       outer loop that introduces the “relevant term” (in our case,
+KEM shared secrets. At the end of this section, we show how
+                                                                       the fresh term used instead of the zero-byte sequence). It
+a simpler version of this theory captures the essence of the
+                                                                       allows one to skip unrolling the outer loop infinitely.
+double ratchet construction, i.e., repeatedly establishing fresh
+Diffie-Hellman shared secrets.                                        Seed/Key Construction These lemmas link the adver-
+   Now consider proving a simple key secrecy lemma: Every              sary’s knowledge of the key and the seed to the adversary’s
+key established in the inner loop either remains confidential,         knowledge of the respectively “next term” (the previous
+or the most recently used fresh value in the outer loop was            seed and the seed established using a fresh value).
+revealed to the adversary. To prove this lemma, we establish
+                                                                        Note that lemmas that “jump to” the relevant term in the
+four auxiliary lemmas:
+                                                                     outer loop (here fresh seed source) and that connect terms
+ Outer Loop Step Every step in the inner loop must be pre-           from the outer loop (here seed construction) are only re-
+  ceded by a step in the outer loop. This lemma can be proven        quired when there can be unboundedly many outer-loop
+  straightforwardly by induction.                                    steps until the relevant step is reached (the relevant step be-
+                                                                     ing the one where the fresh term is introduced). To illus-
+ Fresh Seed Source For every step in the outer loop ratchet,         trate this point, we also provide a second nested loop theory
+  there must be a step in that ratchet deriving the seed that        (nested-loop-simple in [25]) that always uses a fresh value
+  most recently was derived from a fresh value. We can prove         to establish the respective seed in the outer loop. In this theory,
+  this by induction using the outer loop step lemma. When            the lemmas fresh seed source and seed construction are not
+  proving this lemma, there is only one case that does not           needed and unrolling the outer loop is sufficient.
+  immediately lead to a contradiction. When the outer-loop              This simplified theory is similar to the key derivation of
+  step was immediately preceded by an inner-loop step, there         PQ3 when focussing on the Diffie-Hellman shared secrets
+  is neither a contradiction nor does the induction hypothesis       and ignoring the KEM shared secrets. It is also similar to the
+  apply. In that case, we can apply the outer loop step to jump      double ratchet as used in Signal [32]. This simplified theory
+  to the previous outer-loop step, which will either have used       suggests that although the double ratchet construction used in
+  a fresh value to derive its seed (direct contradiction) or a       Signal employs a nested loop, no inductive properties must
+  zero-byte sequence (but since it is an outer-loop step, the        be proven about the outer loop.
+  induction hypothesis applies).
+                                                                     Revealing Loop Example The revealing-loop theory
+ Seed Construction When the adversary derived a seed,
+                                                                     provided in [25] illustrates the challenges of proving proper-
+  they must have used the seed most recently constructed
+                                                                     ties of PQ3 when considering the reveal of root, chain, and
+  using a fresh value in that derivation. Similarly to the pre-
+                                                                     message keys explicitly and thus illustrates how we addressed
+  vious lemma, we can only prove this lemma using outer
+                                                                     the problem of ghost sessions. This example is much sim-
+  loop step as an auxiliary lemma.
+                                                                     pler than the previous ones and is illustrated in Figure 14.
+ Key Construction When the adversary derived a key es-               A participant starts a loop in which they repeatedly apply a
+  tablished in the inner loop, they must have used the most          hash function h to some initial seed ~x. Critically, the model
+  recently generated seed. This lemma can also be proven by          allows the adversary to access any derived value and ~x using
+  induction straightforwardly.                                       a reveal oracle.
+                                                                        Again, we show how to prove a simple key secrecy lemma:
+  Using these four auxiliary lemmas, Tamarin automatically           Every hash value derived is secret, i.e., not known by the
+proves key secrecy. Note that all auxiliary lemmas above are         adversary, unless the adversary compromised any of the pre-
+proven using induction but the key secrecy lemma is not.             vious, intermediate values. To prove this lemma, we require
+  We can describe above lemmas in more general terms.                two auxiliary lemmas:
+ Outer Loop Step This lemma “jumps to” the most recent                Loop Start Every loop that computes a hash based on some
+  step of the outer loop and allows one to skip unrolling the          initial seed ~x is started, sampling ~x. This lemma is
+  inner loop infinitely.                                               straightforward to prove by induction.
+
+
+
+5032    34th USENIX Security Symposium                                                                           USENIX Association
+ Seeds Match If the computed hashes of two loops are iden-          For all traces that satisfy some context C, there exists (or
+  tical, their seed must be identical too. Conceptually, this    does not exist) an instance of P bound to that context (‘;’
+  lemma is again simple and can be proven straightforwardly      denotes vector concatenation), unless T (which specifies the
+  using induction.                                               threat model) applies. For example, for secrecy, C could be
+                                                                 “a message was sent”, P could be “the adversary learned that
+   With both these lemmas, TAMARIN can prove key secrecy         message” (in this case, non-existence would be proven), and
+of this example theory using induction. The two auxiliary        T could be “the message encryption keys were revealed to
+lemmas help TAMARIN address the case that the adversary          the adversary.”
+learns the hash in question from a ghost session. Using the         We require that the protocol is modelled such that there is a
+second lemma, TAMARIN can connect the two sessions using         single fact that models the protocol’s (nested) loop, which we
+a shared, fresh term. Then, using the first lemma, TAMARIN       call the loop fact. This allows us to do two things: (a) exploit
+can instantiate the start of the loop where this shared, fresh   TAMARIN’s heuristics for injective facts (see Section A.1.2),
+term was sampled. From that, TAMARIN can deduce that             (b) clearly identify and relate looping variables, which will be
+both sessions must be the same; this enables it to apply the     critical to our proof methodology. We identify the loop fact’s
+induction hypothesis and to prove the key secrecy lemma.         variables by their position in the fact, and there will generally
+   Again, we can generalize these auxiliary lemmas.              be two kinds of variables: shared and derived secrets and key
+                                                                 material used for establishing the shared and derived secrets.
+ Loop Start This lemma is conceptually similar to the outer      We relate the shared and derived secrets by a strict partial
+  loop step lemma from the previous example and introduces       order. That order is defined as the smallest order closed under
+  no new kinds of lemmas.                                        transitivity for which one variable a is smaller than another
+ Seeds Match This lemma links the computation of a value         variable b if there is a state-transition rule that updates b using
+  in a loop to the inputs to this computation, not determined    a. We say that a loop fact variable can grow unboundedly if
+  by a loop (here, the seed).                                    there is no bound on the size of the terms that the variable can
+                                                                 be unified with, for all ground-instantiated traces.
+                                                                    For example, our PQ3 model uses a Session fact to model
+Summary With the previous two examples, we showed                the double-ratchet steps performed by a participant. The order
+how to handle nested loops and ghost sessions in TAMARIN.        on the shared and derived secrets is depicted in Figure 10 (the
+All auxiliary lemmas in these two theories match the three       black arrows). For PQ3, the variables msgKey, chainKey, and
+types of lemmas introduced in Section 5.4, which we briefly      rootKey can grow unboundedly.
+recapitulate:                                                       Overall, our proof methodology has four steps.
+ Loop-Jump Lemmas These lemmas allow one to skip un-             1. For each of the loop fact’s (possibly nested) loops, write
+  rolling the steps of a (nested) loop. Examples: outer loop        a loop-jump lemma that connects a loop instance to its
+  step, fresh seed source, loop start.                              beginning, i.e., to the beginning of the loop overall or to
+                                                                    the transition from an outer loop to the respective next
+ Adversary-Construction Lemmas These lemmas estab-                  inner loop.
+  lish that for the adversary to construct one term, they must
+  use another term. Examples: key construction, seed con-        2. Identify all the loop facts’ shared and derived secret vari-
+  struction.                                                        ables that can grow unboundedly (e.g., msgKey for PQ3).
+                                                                    For each of these variables, write a variable-linking lemma
+ Variable-Linking Lemmas These lemmas establish that
+                                                                    that connects them to the variables that are directly smaller
+  for two instances of the same fact using two variables a
+                                                                    than them (e.g., a message to a chain key). For some of
+  and b, if both facts have the same value for a, they must
+                                                                    these unboundedly growing variables, it might additionally
+  have the same value for b. Example: seeds match.
+                                                                    be necessary to write a loop-jump lemma that jumps to
+                                                                    the rule application assigning a new value to the respec-
+A.3    Proof Methodology in General                                 tive smaller variable. In our experience, this is the case
+                                                                    for variables that are updated non-determinstically (i.e.,
+Our proof methodology applies to theories that (i) use asym-        kemSS for PQ3).
+metric cryptography to establish shared secrets, which in turn
+are used to derive symmetric encryption keys, (ii) include a     3. Identify all the loop fact’s shared and derived secret vari-
+(nested) loop computing these symmetric encryption keys,            ables that do not grow unboundedly. Typically, these vari-
+and (iii) for which trace formulas are to be proven of the          ables will store shared secrets established using asym-
+following form:                                                     metric cryptography. For each of these variables, write
+                                                                    loop-jump lemmas that link the usage of that variable to
+            ∀⃗x.C(⃗x) =⇒ (¬)∃⃗y.P(⃗x;⃗y) ∨ T (⃗x) .                 the instantiation of the respective asymmetric key material
+
+
+
+USENIX Association                                                                   34th USENIX Security Symposium           5033
+ 1   functions : hkdf /2 , suffix /1 , prefix /1 , concat /2 , h /1     model the pre-key hash used during session establishment,
+ 2                                                                      see Section 4.
+ 3   equations : concat ( prefix (x), suffix (x )) = x
+                                                                           The functions pqpk, encap, and decap model KEM encap-
+ 4
+ 5   functions : pqpk /1 , encap /2 , decap /2                          sulation and follow the standard symbolic model for asym-
+ 6   equations : decap ( encap (k , pqpk ( sk )) , sk ) = k             metric encryption. Finally, we use the wrapper function Just
+ 7                                                                      and the constant None to model optional values. The func-
+ 8   functions : default /2 , Just /1 , None /0 , unjust /1
+ 9   equations : default ( Just (v), t) = v ,
+                                                                        tion default (together with the accompanying equations)
+10               default ( None , v) = v ,                              unpacks an optional value or replaces it with a default. For
+11               unjust ( Just (t )) = t                                example, we use Just and None to wrap values that are only
+                                                                        sent optionally, e.g., the pre-key hash. The function unjust
+     Figure 15: Custom functions and equations defined in our           allows the adversary to access the contents of any Just value
+     formal model.                                                      they intercept.
+
+
+         used to establish the secret. The details of these loop-jump
+         lemmas depend on the protocol specification. For example,
+         the lemmas that link the ECDH shared secret to the respec-
+         tive ECDH keys substantially differ from the lemmas that
+         link the KEM shared secret to the respective encapsulation
+         key.
+     4. Finally, for all variables connected by variable-linking lem-
+        mas, write an adversary-construction lemma that states that
+        in order for the adversary to know the contents of the re-
+        spective larger variable, they must have either violated the
+        threat model or know the respective smaller variables.
+       Following these steps, one would write the lemmas
+     RootKeyConnectionReceive, RootKeyConnectionSend,
+     and SessionStart in Step 1, the lemmas depicted in
+     Figure 10 in Step 2, the lemmas depicted in Figure 11 in
+     Step 3, and the lemmas depicted in Figure 9 in Step 4.
+
+     B    Equational Theory for Protocol Model
+        We use TAMARIN’s built-in equational theories for sign-
+     ing, symmetric encryption, and Diffie-Hellman key exchange.
+     These respectively model digital signatures, symmetric en-
+     cryption under message keys, and ECDH key exchanges. We
+     additionally use TAMARIN’s natural numbers theory to model
+     message counters.
+        In addition to these built-in theories, we specify some
+     custom functions and equations, shown in Figure 15. First,
+     we specify the functions hkdf, suffix, and prefix for key
+     derivation. The function hkdf models an HMAC-based key
+     derivation function [23] and takes two arguments: the first is
+     the source of entropy and the second is a domain-separating
+     tag or salt. The prefix and suffix functions are used for
+     chain and root key derivations, which are derived by split-
+     ting a bit-string into a prefix and suffix of equal length. The
+     function concat allows one to recover a value given its prefix
+     and suffix. We do not need to use concat in the rules mod-
+     eling the protocol roles of regular parties in our model, but
+     the adversary can use it to reconstruct a value from the prefix
+     and suffix. Additionally, we specify the unary function h to
+
+
+
+     5034    34th USENIX Security Symposium                                                                    USENIX Association
+

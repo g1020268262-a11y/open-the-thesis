@@ -1,0 +1,468 @@
+Formal Verification of the WireGuard Protocol
+                                 www.wireguard.com
+
+             Jason A. Donenfeld                      Kevin Milner
+                                                   Oxford University
+              jason@zx2c4.com                  kevin.milner@cs.ox.ac.uk
+                                      Draft Revision
+
+
+                                          Abstract
+             WireGuard, the secure network tunnel, uses an interesting Diffie-
+         Hellman authenticated key exchange protocol based on NoiseIK, custom
+         tailored to suit its unique operational requirements. This paper enumerates
+         the security properties of this key exchange and then explores the formal
+         verification of such properties. The end result is a formally verified secure
+         network tunnel protocol.
+
+
+   1     Background
+   WireGuard is a secure network tunnel for transporting layer 3 packets, for some
+   definition of secure. This paper endeavors to determine exactly what that is, and
+   formally verify it as such. The WireGuard protocol is extensively detailed in [2],
+   which itself is based on the NoiseIK [3] handshake. The WireGuard protocol
+   consists of several mechanisms: an authenticated key exchange, a cookie MAC
+   system for mitigating denial of service attacks, an elegant timer state machine for
+   concealing state to system administrators, and several desirable design decisions
+   from an implementation security perspective. Notably, WireGuard aims to be
+   silent in the face of unauthenticated packets (“stealthiness”), avoid dynamic
+   memory allocation, only adjust state based on authenticated data in order to
+   maintain fixed size memory allocations, avoid parsers, not require any long
+   term storage, allow initiator and responder to swap roles, and have the state
+   machine handle all transitions automatically. These design requirements lead to
+   an interesting authenticated key exchange, around which the other aspects of
+   the protocol revolve.
+       Permanent ID of this document: d376f649d7f4b68f616e05e5f64d660e9b23d7af. Static link:
+   wireguard.com/papers/wireguard-formal-verification.pdf. Date: June 7, 2018. This is draft
+   revision b956944. Copyright © 2017 Jason A. Donenfeld & Kevin Milner. All Rights Reserved.
+
+
+
+
+                                               1
+2    Key Exchange Review
+While the WireGuard key exchange is extensively discussed in [2], we briefly
+review the overall structure and import several variables and conventions. Leaving
+aside the cookie MAC system, WireGuard consists of a 1-RTT handshake—from
+initiator to responder, and responder back to initiator—after which the initiator
+can then begin an exchange of transport data, depicted in figure 1. This initial
+exchange of transport data from the initiator provides key confirmation, and
+after, either initiator or responder may send transport data. Transport data is
+encrypted using an AEAD, with a pair of symmetric keys, one for sending and
+one for receiving, derived from the preceding two handshake messages, which
+are referred to as the “session keys”, existing within a “session”.
+
+               Initiator—i                           Responder—r
+
+
+                             Handshake Initiation
+
+
+                             Handshake Response
+
+
+                                Transport Data
+
+
+                                Transport Data
+
+
+
+         Figure 1: 1-RTT handshake between initiator and responder
+
+   The initiator, i, and the responder, r, both keep several values secret. They
+each have a static long-term key, Si and Sr , as well as a random session ephemeral
+key, Ei and Er . They may optionally also share a pre-shared symmetric key, Q;
+when Q is in use, WireGuard is using what we call “pre-shared key mode“, and
+otherwise WireGuard is using “normal mode“, and Q is considered to be 032 ,
+the all zero 256-bit string. The initiator and responder exchange messages and
+keep track of a shared secret, C.
+
+
+3    Properties
+We enumerate properties first in the case Si , Sr , Ei , and Er (and potentially Q)
+are kept secret. Then we explore which properties still remain when one or more
+of these secret values are compromised by an attacker. An attacker is posited to
+be in an active man-in-the-middle position. As pre-shared key mode is meant
+to merely augment the security properties, in the face of a quantum attacker
+
+
+                                        2
+or possibly other circumstances, the security properties described herein first
+discuss what is provided by normal mode, and then subsequently approach the
+additional properties afforded by pre-shared key mode.
+
+3.1     Key Agreement & Correctness
+The initiator and responder are able to complete the handshake and arrive
+at the same session keys. Without an attacker, this constitutes a property of
+correctness—the protocol at least works. With an active attacker, the fact that
+key agreement necessarily occurs means that the session has authenticity.
+
+3.1.1   No Compromised Keys
+When no secret values are compromised, WireGuard achieves key agreement and
+correctness.
+
+3.1.2   Compromised Ephemeral Keys
+When either Ei , Er , or Ei and Er are compromised, WireGuard achieves key
+agreement and correctness.
+
+3.1.3   Compromised Static Keys
+When Si is compromised, the initiator achieves key agreement with the responder,
+because WireGuard is resistant to key-compromise impersonation (KCI), but
+the responder does not achieve key agreement with the initiator. When Sr is
+compromised, the responder achieves key agreement with the initiator, because
+WireGuard is resistant to KCI, but the initiator does not achieve key agreement
+with the responder. (When Si and Sr are both compromised, there is no key
+agreement.)
+
+3.1.4   Compromised Static Key & Ephemeral Key
+The KCI resistance of the prior section also holds when either Si and Er or Sr
+and Ei are compromised.
+    When all four keys, Si , Sr , Ei , and Er , are compromised, WireGuard remains
+resistant to an unknown key-share (UKS) attack. That is, if the initiator and
+responder derive C, then they must necessarily agree on all four keys, even if
+they are compromised.
+
+3.1.5   Pre-shared Key Mode
+When using pre-shared key mode, if Q is not compromised, WireGuard achieves
+key agreement and correctness, even when Si , Sr , Ei , and Er are all compromised.
+When Q is compromised, the properties of the preceding four sections hold.
+
+
+
+
+                                        3
+3.2     Key Secrecy
+When there is key agreement, there is also key secrecy, when the resultant session
+keys are only known the initiator and responder, and not to the attacker.
+
+3.2.1   No Compromised Keys
+When no secret values are compromised, WireGuard achieves key secrecy.
+
+3.2.2   Compromised Ephemeral Keys
+When either Ei , Er , or Ei and Er are compromised, WireGuard achieves key
+secrecy.
+
+3.2.3   Compromised Static Keys
+When Si , Sr , or Si and Sr are compromised, WireGuard achieves key secrecy.
+
+3.2.4   Compromised Static Key & Ephemeral Key
+When either Si and Er or Sr and Ei are compromised, WireGuard achieves key
+secrecy.
+
+3.2.5   Forward Secrecy
+Forward secrecy changes the attacker’s position to that of a passive man-in-the-
+middle, recording all traffic, who at some later time compromises either Si , Sr ,
+or Si and Sr . As stated above, if the attacker does not also compromise either
+Ei or Er , WireGuard achieves forward secrecy.
+
+3.2.6   Pre-shared Key Mode
+When using pre-shared key mode, if Q is not compromised, WireGuard achieves
+key secrecy, even when Si , Sr , Ei , and Er are all compromised. When Q is
+compromised, the properties of the preceding five sections hold.
+
+3.3     Session Uniqueness
+Different sessions will always have different, unique, session keys, due to the use
+of the ephemeral values, Ei and Er .
+
+3.3.1   Total Freshness
+When both Ei and Er are fresh, WireGuard achieves session uniqueness.
+
+3.3.2   Partial Freshness
+When either Ei or Er is fresh, WireGuard achieves session uniqueness.
+
+
+
+                                        4
+3.4     Identity Hiding
+Sr is never transmitted in any form; it is secret from an attacker. Si is transmitted,
+but encrypted; it is secret from an attacker.
+
+3.4.1    No Compromised Keys
+When no secret values are compromised, WireGuard achieves identity hiding.
+
+3.4.2    Compromised Ephemeral Keys
+When Er is compromised, WireGuard achieves identity hiding. When Ei is
+compromised, WireGuard does not achieve identity hiding.
+
+3.4.3    Compromised Static Keys
+When Si is compromised, Si is no longer secret, by definition. When Sr is
+compromised, WireGuard does not achieve identity hiding; this is a reasonable
+trade-off permitted by the protocol.
+
+
+4       Formal Model & Proofs
+4.1     Tamarin
+Tamarin [5] is a formal verification tool supporting unbounded verification of
+security protocols modulo an equational theory. Protocols are specified as
+a collection of labeled multiset-rewriting rules, which execute subject to an
+adversary and equational theory. We give a brief overview of how Tamarin works
+here; for a detailed discussion see [4]. For an introduction to using Tamarin, we
+suggest the manual at [6].
+
+Facts and Rules
+A model in Tamarin defines a transition system, with rules specifying how the
+world’s state can change over time. State is represented by a multiset of facts,
+each of which has an associated name and arity. For example, we write Fa(x, y)
+for a fact named “Fa” with two associated terms x and y. Facts are the atoms
+from which we build our protocol model, used to represent agent state, limited
+resources, and other execution constraints.
+    Rules specify how world state can change over time, representing both
+adversary capabilities and the behavior of participating agents (similar to oracles
+in Bellare-Rogaway style models). Executing a rule at some time point may
+require some facts to exist prior to that time point, and may create some other
+facts at that time point; these facts are called the premises and conclusions of
+the rule respectively.
+    Facts can either be marked as persistent or linear; persistent facts may be
+used repeatedly to satisfy the premises of rules, while linear facts are removed
+
+
+                                          5
+from the world state at the timepoint they are used to execute a rule. This allows
+us to efficiently model read-only memory or causal constraints using persistent
+facts, and also allows us to represent linear constraints like non-monotonic agent
+state, limited resources, and control flow.
+     Rules are labeled with actions, such that the execution of a rule at some time
+point associates some action with that time point. Actions do not influence rule
+execution directly, but instead incrementally construct a trace which represents
+a sort of record of rule execution. When we prove that a protocol model has
+some property, we reference these actions and are proving a property of the set
+of all traces which can be generated by the protocol model.
+     Finally, there are a few special facts in Tamarin, to model the generation of
+fresh terms (e.g. from a PRNG) and to interact with the network. The Fr(x)
+fact can be used in the premises of a rule to model generating a fresh term x.
+In( . . . ) and Out( . . . ) can be used in the premises and conclusions respectively
+to model receiving from or sending to the adversary-controlled network.
+
+Adversary and Equational Theories
+Tamarin models cryptography symbolically, and assumes a Dolev-Yao adver-
+sary [1]. That is, the adversary intercepts every message and can block or modify
+them as much as desired, restricted only by a message deduction theory.
+    Tamarin models interaction with the network through special facts as men-
+tioned above. Terms sent to the network using an Out( . . . ) fact in the conclusion
+of a rule can be used by the adversary to construct new messages, which can then
+be received by using the In( . . . ) fact in the premises of a rule. The adversary can
+also construct or deconstruct terms according to public functions. For example,
+if encrypt(_, _) is a public function, then an adversary with knowledge of two
+terms x and y the can construct encrypt(x, y).
+    Equality constraints in Tamarin are equality modulo an equational theory,
+rather than being strictly based on syntactic matching. For example, our
+equational theory may include
+
+                          decrypt(encrypt(m, k), k) = m,
+
+even though the terms m and decrypt(encrypt(m, k), k) are not syntactically
+identical. Tamarin includes built in definitions for a number of different crypto-
+graphic primitives, and additional formulae and equations can be defined easily.
+Notably, Tamarin includes support for a Diffie-Hellman equational theory, allow-
+ing symbolic reasoning about key exchange protocols and adversary capability
+in that setting.
+
+4.2    WireGuard Model
+The model of WireGuard makes use of the Diffie-Hellman equational theory
+defined in [5] with five additional formula: h/1, for hashing, aead/3, decrypt/2,
+verify/3 for authenticated encryption with additional data (AEAD) operations,
+
+
+                                          6
+and true/0, for an affirmative result of AEAD decryption verification. Here, /k
+denotes k-arity. These formulae have the equations
+
+                           decrypt(aead(k, p, a), k) → p
+                           verify(aead(k, p, a), a, k) → true,
+
+representing the ability to recover the encrypted plaintext p of aead(k, p, a) using
+the key k, and also verify its authenticity using both the key k and the additional
+authenticated data (AAD) a.
+    Note that these equations do not provide the adversary a way to scramble
+the plaintext in the AEAD such that it could be decrypted incorrectly when
+the AAD is not known, as could happen in a real-world flawed implementation.
+For the purposes of modeling WireGuard, this is sufficient, since the AAD is
+always known. Interestingly, decrypt is never needed by the agents as they can
+reconstruct the aead term directly; it exists so that the adversary can learn the
+plaintext of messages after revealing a key.
+    There are three actions, each of which concern all the relevant state variables,
+RKeys(Si , Sr , Ei , Er , Q, C), IKeys(Si , Sr , Ei , Er , Q, C), and RConfirm(Si , Sr , Ei ,
+Er , Q, C), associated with the three states in the protocol, which are, respectively:
+the responder after receiving the first message from the initiator and replying,
+the initiator after receiving the second message from the responder and deriving
+transport keys, and the responder after receiving the first transport message
+from the initiator, thereby confirming the transport keys.
+    We consider an adversary able to compromise three types of secrets at
+any time, corresponding to the following actions in the trace: Reveal(Si ) and
+Reveal(Sr ) correspond to a compromise of either peer’s static key, Reveal(Ei )
+and Reveal(Er ) correspond to a compromise of either peer’s ephemeral key, and
+Reveal(Q) corresponds to a compromise of the pre-shared key. Reveal(Q) may
+also correspond to the pre-shared key mode not being used at all, in which case
+the WireGuard protocol uses an all zero key, which is equivalent to the adversary
+simply knowing it in advance. Additionally, for secrecy properties we reference a
+built-in action K(C). This action is yielded by a rule equivalent to In(C) in the
+premises, and is referenced to add a constraint that the adversary must be able
+to construct the term C to violate secrecy (and thus that C is secret if no such
+trace exists).
+    Wireguard assumes that agents share their public keys and optionally a pre-
+shared symmetic key before the key exchange occurs, so rather than receiving
+public keys over the adversary-controlled network, agents add the public key of
+their peers directly by taking in Agent(S pub ) and Agent(Q) facts directly in the
+premises. These facts are persistent, as multiple agents might have the same
+peer, and are created by rules which just generate fresh values. This is equivalent
+to peers receiving public and pre-shared keys out-of-band before the protocol
+begins.
+    The model breaks agent state into two parts, an invariant portion and a
+mutable portion. The mutable portion is stored in a linear fact State(id, x),
+containing a fresh identifier (to uniquely bind it to the relevant invariant
+
+
+                                             7
+fact) and a generic term representing the current state machine state of the
+agent (e.g. that a handshake is in progress with a particular ephemeral key
+and hash chain). The invariants are contained instead in a persistent fact
+StateInvariants(id, Q, Sipriv , Srpub , DH(Sipriv , Srpub )), containing the same identi-
+fier, the relevant pre-shared symmetric key, initiator private key, and responder
+public key, as well as the precomputed static-static Diffie-Hellman (included to
+reduce the amount of computation done by Tamarin). Splitting up the state
+in this way allows Tamarin to immediately link the terms in the invariant to
+the point where the agents were set up—whereas solving a single linear fact
+containing all state terms would only give the state transitions that could have
+occurred immediately prior.
+
+4.3     Verified Properties of the Model
+The Tamarin model includes the ability of the adversary to compromise keys at
+any time, so we typically prove the contrapositive of the properties enumerated
+in Section 3. For example, where a property might state, “when Si and Er are
+compromised, the initiator achieves agreement with the responder,” we instead
+prove that if the initiator does not achieve agreement with the responder then
+there must have been compromise of some other set of keys. Tamarin’s “spthy”
+description language is here converted into standard first order logic, with one
+exception: the modifier @ t1 binds the preceding expression to a particular time
+t1 . Times specifiers like t1 may be temporally compared to other times, such
+as in the statement t1 < t2 . With this background established, the following
+properties are verified by the model:
+
+4.3.1    Agreement
+The key agreement properties stated in Section 3.1 are covered by the following
+three lemmas. First, from the initiator’s perspective, we prove that disagreement
+implies that either Sr was compromised beforehand, or both Si and Ei were
+compromised beforehand.
+Lemma 1 (Unmatched initiator session requires Sr or (Si , Ei ) compromise, as
+well as Q compromise).
+
+  ∀Si , Sr , Ei , Er , Q, C, t1 . IKeys(Si , Sr , Ei , Er , Q, C) @ t1 ∧
+                    ¬ (∃t2 < t1 . RKeys(Si , Sr , Ei , Er , Q, C) @ t2 )
+                          =⇒ ((∃t2 < t1 . Reveal(Sr ) @ t2 ) ∨
+             (∃t2 < t1 , t3 < t1 . Reveal(Si ) @ t2 ∧ Reveal(Ei ) @ t3 )) ∧
+                                                             (∃t2 < t1 . Reveal(Q) @ t2 )
+
+   Similarly, from the responder’s perspective, disagreement after the first
+transport message implies either Si or both Sr and Er were compromised before
+that message.
+
+
+
+                                               8
+Lemma 2 (Unmatched responder session requires Si or (Sr , Er ) compromise,
+as well as Q compromise).
+
+  ∀Si , Sr , Ei , Er , Q, C, t1 . RConfirm(Si , Sr , Ei , Er , Q, C) @ t1 ∧
+                        ¬ (∃t2 < t1 . IKeys(Si , Sr , Ei , Er , Q, C) @ t2 )
+                               =⇒ ((∃t2 < t1 . Reveal(Si ) @ t2 ) ∨
+               (∃t2 < t1 , t3 < t1 . Reveal(Sr ) @ t2 ∧ Reveal(Er ) @ t3 )) ∧
+                                                                      (∃t2 < t1 . Reveal(Q) @ t2 )
+
+   Finally, we show that if there is a session key, it necessarily came from the
+same set of identity keys, thereby preventing an unknown key-share attack:
+Lemma 3 (Session derivation implies key agreement).
+
+  ∀Si , Si0 , Sr , Sr0 , Ei , Ei0 , Er , Er0 , Q, Q0 , C, t1 , t2 .
+         IKeys(Si , Sr , Ei , Er , Q, C) @ t1 ∧ RKeys(Si0 , Sr0 , Ei0 , Er0 , Q0 , C) @ t2
+                               =⇒ Si = Si0 ∧ Sr = Sr0 ∧ Ei = Ei0 ∧ Er = Er0 ∧ Q = Q0
+
+4.3.2     Secrecy
+For the secrecy properties in Section 3.2, we prove a secrecy property conditioned
+on key agreement. Specifically, if I and R agree on their keys (even if R has
+not yet confirmed them), then either the adversary never learns the key C they
+derived, or the adversary compromised both the static and ephemeral of one of
+the agents.
+Lemma 4 (Key secrecy unless (Si , Ei ) or (Sr , Er ), as well as Q, are compro-
+mised).
+
+  ∀Si , Sr , Ei , Er , Q, C, t1 , t2 .
+         IKeys(Si , Sr , Ei , Er , Q, C) @ t1 ∧ RKeys(Si , Sr , Ei , Er , Q, C) @ t2
+    =⇒ ¬ (∃t3 . K(C) @ t3 ) ∨
+                                      ((∃t3 . Reveal(Q) @ t3 ) ∧
+                      ((∃t3 , t4 . Reveal(Sr ) @ t3 ∧ Reveal(Er ) @ t4 ) ∨
+                                              (∃t3 , t4 . Reveal(Si ) @ t3 ∧ Reveal(Ei ) @ t4 )))
+
+4.3.3     Uniqueness
+Whereas uniqueness in Section 3.3 is stated in terms of whether terms are fresh,
+in the Tamarin model any agent reaching an “agreement” action must have
+generated at least their own ephemeral fresh; recall that we do not model a
+broken randomness source that produces adversary-controlled values, just one
+which can be revealed by the adversary. Thus, we prove that an agent who
+negotiated a particular key can only do so once, even using different ephemeral
+and pre-shared keys, with no restriction on adversary compromise rules.
+
+
+                                                        9
+Lemma 5 (Initiator session uniqueness).
+
+  ∀Si , Sr , Ei , Er , Q, C, t1 . IKeys(Si , Sr , Ei , Er , Q, C) @ t1
+                          =⇒ ¬ (∃Ei0 , Er0 , Q0 , t2 . IKeys(Si , Sr , Ei0 , Er0 , Q0 , C) @ t2 )
+
+Lemma 6 (Responder session uniqueness).
+
+  ∀Si , Sr , Ei , Er , Q, C, t1 . RConfirm(Si , Sr , Ei , Er , Q, C) @ t1
+                     =⇒ ¬ (∃Ei0 , Er0 , Q0 , t2 . RConfirm(Si , Sr , Ei0 , Er0 , Q0 , C) @ t2 )
+
+4.3.4    Identity Hiding
+Identity hiding is difficult to model directly because it requires describing what
+an adversary can learn from a particular message. We cannot prove anything
+about whether the adversary learned the public key of the initiator, because the
+adversary does know the public key of every agent. Instead, we model identity
+hiding through the use of a fresh “surrogate” term, σ, which is added to the first
+message in the same place as the initiators public key; we then prove that the
+adversary did not learn σ from the first message.
+     It is important to note that this proves a more limited property than the
+identity hiding discussed in Section 3.4. For example, the public static key of
+Si , unlike σ is not fresh each message. It may therefore still be possible for the
+adversary to link multiple initiator messages back to the same identity while still
+fulfilling the property below. Furthermore, the usage of the “mac1” parameter
+provides an opportunity for an attacker to confirm the destination public key of
+a message from an honest sender.
+Lemma 7 (Initiator identity (surrogate) hiding).
+
+  ∀σ, Si , Sr , Ei , Er , Q, C, t1 .
+                        RKeys(Si , Sr , Ei , Er , Q, C) @ t1 ∧ σ @ t1
+                =⇒ (∃t2 . Reveal(Sr ) @ t2 ) ∨ (∃t2 . Reveal(Si ) @ t2 ) ∨
+                                                                    (∃t2 . Reveal(Ei ) @ t2 )
+
+
+References
+[1] Danny Dolev and Andrew Yao. “On the security of public key protocols”. In:
+    IEEE Transactions on information theory 29.2 (1983), pp. 198–208 (cit. on
+    p. 6).
+[2] Jason A. Donenfeld. “WireGuard: Next Generation Kernel Network Tunnel”.
+    In: Proceedings of the 2017 Network and Distributed System Security Sym-
+    posium. NDSS’17. Document ID: 4846ada1492f5d92198df154f48c3d54205
+    657bc. San Diego, CA, Feb. 2017. isbn: 1-891562-46-0. doi: 10.14722/ndss.
+    2017.23160. url: https://www.wireguard.com/papers/wireguard.pdf
+    (cit. on pp. 1, 2).
+
+
+                                               10
+[3] Trevor Perrin. The Noise Protocol Framework. 2016. url: http://noiseprotocol.
+    org/noise.pdf (cit. on p. 1).
+[4] Benedikt Schmidt. “Formal analysis of key exchange protocols and physical
+    protocols”. Doctoral Thesis. ETH Zürich, 2012. doi: 10 . 3929 / ethz - a -
+    009898924 (cit. on p. 5).
+[5] Benedikt Schmidt et al. “Automated Analysis of Diffie-Hellman Protocols
+    and Advanced Security Properties”. In: CSF. June 2012, pp. 78–94. doi:
+    10.1109/CSF.2012.25 (cit. on pp. 5, 6).
+[6] Tamarin Prover Manual. url: https://tamarin-prover.github.io/manual/
+    (cit. on p. 5).
+
+
+
+
+                                     11
+

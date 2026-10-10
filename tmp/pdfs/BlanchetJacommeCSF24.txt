@@ -1,0 +1,921 @@
+Post-quantum sound C RYPTOV ERIF and verification
+      of hybrid TLS and SSH key-exchanges
+               Bruno Blanchet                                               Charlie Jacomme
+         Inria, F-75012 Paris, France            Université de Lorraine, CNRS, Inria, LORIA, F-54000 Nancy, France
+           bruno.blanchet@inria.fr                                      charlie.jacomme@inria.fr
+
+
+
+   Abstract—With the potential arrival of quantum computers,           The pace at which new protocols are developed or updated
+communication protocols are now being updated at a fast pace to     raises the challenge of being able to obtain security guarantees
+be secure even against attackers with access to such a computer.    on them. In the classical setting, the C RYPTOV ERIF tool
+A core issue is that we need to update the existing tools used
+to verify security protocols, as classical security proofs do not   has successfully been used to provide guarantees on several
+always carry over to quantum attackers.                             protocols, and notably the classical TLS [7] and SSH [8]
+   In this work, we prove the post-quantum soundness of the         key exchanges. C RYPTOV ERIF mechanizes the game-hopping
+C RYPTOV ERIF prover, a tool used to semi-automatically obtain      technique of classical cryptographic proofs:
+computational security guarantees over cryptographic construc-
+tions. It required an update of the whole semantics in order          • the protocol is expressed as a set of oracles that can be
+to define it for any black-box interactive attacker and not             queried by the attacker;
+just probabilistic Turing machines. We also had to validate           • security is expressed by secrecy (the attacker can dis-
+the soundness of all its proof techniques, the so-called game           tinguish the secret from a fresh random value only with
+transformations.
+   We used this new post-quantum sound C RYPTOV ERIF to                 negligible probability), correspondence (if an event has
+obtain the first formal security guarantees over two IETF draft         been raised, then some other event has been raised
+proposals designing post-quantum variants of SSH and TLS.               with overwhelming probability; useful for modeling au-
+   Index Terms—protocol verification; formal methods; cryptog-          thentication), and indistinguishability (the attacker can
+raphy; post-quantum; TLS                                                distinguish the real world from an ideal and obviously
+                                                                        secure world only with negligible probability) properties;
+                      I. I NTRODUCTION                                • and C RYPTOV ERIF performs valid rewritings over the
+                                                                        game, the game-hops, until it can provide a sequence of
+   It is well known that a quantum computer can compute
+                                                                        transformations leading to a game in which the desired
+discrete logarithms and break Diffie-Hellman (DH)-based
+                                                                        property can easily be proved without any cryptographic
+cryptography. So, while no one can ascertain when a quantum
+                                                                        assumption.
+computer may actually be able to do so, it has become suffi-
+ciently plausible for the research community to start globally         An issue of classical cryptographic proofs, whether pen-and-
+upgrading the security of existing protocols.                       paper or mechanized by C RYPTOV ERIF, is that a proof valid
+   As a witness, multiple NIST standardization processes are        against a classical attacker may not be valid against a quantum
+ongoing for post-quantum cryptographic primitives, and no-          attacker. This can of course be the case when the proof relies
+tably for Key Encapsulation Mechanisms (KEMs), meant to             on a security assumption over a primitive that does not have a
+replace the DH-based computations. On the protocol side,            post-quantum secure instantiation, or which is simply false for
+we find academic proposals of fully novel post-quantum key          a quantum attacker. Such is the case for a proof relying on,
+exchanges [1], [2], [3] only based on post-quantum KEMs.            e.g., the Decisional Diffie-Hellman (DDH) assumption over
+   For a faster deployment, other people are trying to provide      the elliptic curve X25519.
+small incremental updates of existing protocols, so that by            This issue is easy to resolve: one just needs to ascertain that
+adding a KEM computation in parallel to the DH ones, we             all the cryptographic assumptions over the primitives do have
+get the best of both worlds. This yields so-called hybrid key-      post-quantum instantiations. However, classical proofs can in
+exchanges, that have the benefit of relying in the classical        fact be non post-quantum for deeper reasons, for instance due
+setting on the well known security of DH computations, while        to proof techniques that specifically refer to, and reason on,
+also independently adding the benefit of the less studied KEMs      the internal state of the attacker. An example is the rewinding
+believed to be post-quantum secure. The Signal messaging ap-        technique, where the attacker state is saved at some point, and
+plication already deployed a new hybrid post-quantum version        at any point in the proof we can reset the attacker to this state.
+of its initial key exchange, dubbed PQXDH [4]. In addition,            Such operations are impossible to carry out on a quantum
+there are ongoing drafts at the Internet Engineering Task Force     computer due to the “no-cloning theorem” [9]: it is impossible
+(IETF) for hybrid variants of Transport Layer Security (TLS)        to duplicate a quantum state. As such, any proof that relies
+1.3 [5] and Secure Shell (SSH) [6].                                 on such techniques is in fact not post-quantum sound. This
+core issue for post-quantum sound cryptographic proofs was          probabilistic Relational Hoare Logic for E ASY C RYPT, and
+notably discussed in [10], [11]. More generally, the main           the Bana-Comon [19] logic for S QUIRREL), the process is
+difficulties to get post-quantum sound proofs are discussed         fundamentally different for each tool. Importantly, all those
+in [12], [13], where a class of valid proofs that do carry over     tools are complementary:
+to quantum attackers is identified.                                    • E ASY C RYPT is fully interactive and more expressive, it
+   While C RYPTOV ERIF does not appear to use problematic                 is thus better at verifying complex primitives;
+proof techniques and seems to naturally fall inside the category       • S QUIRREL is a bit more abstracted and still fully interac-
+of post-quantum sound techniques, two problems arise:                     tive; while less expressive, it enables proving stateful pro-
+   • formally ensuring this is difficult, as every technique and          tocols and more complex security properties like privacy-
+      associated soundness proof needs to be checked;                     based ones;
+   • and further, it turns out that the theoretical foundations        • C RYPTOV ERIF is on its side the most automated and
+      of C RYPTOV ERIF do not allow considering quantum                   highly efficient at verifying, e.g., key-exchanges, but
+      attackers in the semantics.                                         when automation fails it does not have a full logic to
+   Indeed, C RYPTOV ERIF uses a dialect of the pi-calculus to             reason in a fine-grained way about protocol executions,
+express protocols, and the security is defined for protocols              thus for instance not allowing proofs of stateful protocols.
+running inside any context built within the same dialect. That         The Random Oracle Model (ROM) raises additional diffi-
+is, we define the possible attackers as any program written         culties in the quantum setting, as the attacker must be able to
+using the same programming language as the one used for             make queries that are in quantum superpositions. Only [16]
+protocols. This programming language naturally only allows          supports the quantum Random Oracle Model (qROM), and
+to write classical protocols, and not quantum computations.         neither us nor [18] do. It is crucial to support it when targeting
+As such, the C RYPTOV ERIF semantics is inherently restricted       primitives, but less so for protocols, which are our main
+to classical attackers and does not capture quantum ones.           target. Indeed, we can often prove the security of protocols
+   In this work, we thus set out to address the corresponding       under different assumptions for the hash functions, typically
+research question:                                                  by relying on the Pseudorandom Function (PRF) assumption.
+Can we update the C RYPTOV ERIF semantics and associated               Historically, the semantics of C RYPTOV ERIF was defined
+   reasoning techniques to make it post-quantum sound?              over a pi-calculus syntax. An oracle-based syntax was previ-
+                                                                    ously proposed in [20] and a translation from an oracle front-
+     a) Contributions: Our main contributions are three-fold:       end to the pi-calculus syntax was in fact already implemented
+   • we make C RYPTOV ERIF post-quantum sound by de-                in C RYPTOV ERIF. However, this oracle syntax came with no
+     signing a semantics where attackers can be any black-          actual semantics, and the translation with no guarantees.
+     box interactive attacker, whose computing power is only           TLS 1.3 was previously studied with C RYPTOV ERIF in [7],
+     restricted by the cryptographic assumptions;                   and SSH in [8]. Our own models for their hybrid proposals
+   • while updating the whole semantics, we in fact made            are based on those previous models, which we extend with the
+     C RYPTOV ERIF closer to classical cryptographic proofs:        new KEM-based parts. Proving a hybrid key exchange implies
+     it previously reasoned over protocols expressed inside a       making two distinct proofs, one only under the classical
+     dialect of the pi-calculus, while the semantics is now         assumptions without any assumption about the KEMs, and
+     directly defined on an oracle-based syntax;                    one only under the post-quantum sound assumptions and no
+   • we formally prove the security of current IETF draft           assumption about the DH-based part. The existing proofs for
+     proposals for a hybrid TLS [5] and SSH [6], both in the        the classical part had to be adapted, and we came up with
+     classical and post-quantum settings. These protocols are       fully novel proofs for the post-quantum part.
+     clearly important in practice. In particular, hybrid TLS is
+     already supported by Chrome from version 116 [14].                 II. O RACLE - BASED L ANGUAGE FOR C RYPTOV ERIF
+   On the practical side, C RYPTOV ERIF comes with a library          We first present here our novel semantics for the oracle-
+of classical cryptographic assumptions on primitives. We also       based input language. Recall that the semantics of C RYP -
+developed in this work a post-quantum variant of this library,      TOV ERIF was only defined on a pi-calculus-based one.
+removing non post-quantum sound assumptions, as well as               To allow for complex proof techniques and reasonings, the
+adding the classical ones for KEMs.                                 syntax of C RYPTOV ERIF is rich and contains many constructs.
+   Our developments have been included in the official C RYP -      For instance, conditionals can be seen as a computation
+TOV ERIF release version 2.09 (http://cryptoverif.inria.fr/). Its   happening either directly inside a message or at the level
+examples folder also contains our case studies.                     of processes. We only present here simplified syntax and
+                                                                    semantics; we refer the reader to our extensive technical
+A. Related Work                                                     report [21] on C RYPTOV ERIF for the full definitions.
+   Making existing tools post-quantum sound has been a recent
+undertaking, for instance for E ASY C RYPT [15] in [16], and        A. Syntax
+S QUIRREL [17] in [18]. Yet, as all of them use differ-                A simplified view of the syntax is given in Fig. 1. Types are
+ent theoretical foundations (game-hops for C RYPTOV ERIF, a         sets of values, typically bit-strings, e.g., the set of public keys
+of a KEM or booleans. Some types are pre-defined, bool =              M, N ::=                                  terms
+{true, false}, where false is 0 and true is 1; bitstring is the set      x[M1 , . . . , Mm ]                        variable access
+of all bit-strings. C RYPTOV ERIF models abstract computations           f (M1 , . . . , Mm )                       function application
+using typed function symbols f : T1 × . . . × Tm → T , where
+                                                                      Q ::=                                     oracle definitions
+f represents an efficiently computable, deterministic function
+                                                                          0                                        nil
+that maps each tuple in T1 × . . . × Tm to an element of T .
+                                                                          Q | Q′                                   parallel composition
+   To represent computations over bit-strings, we thus rely on
+                                                                          foreach i ≤ n do Q                       replication n times
+terms, built from function applications as well as variable ac-
+cesses. A variable x models a cell, which is initially undefined          O[ei](x[ei] : T ) := P                   oracle declaration
+and can be set at most once to some value by an oracle. Such          P ::=                                           oracle body
+variables can be accessed by any oracle and are not restricted            yield                                          end
+by the scope. Variables are indexed by terms that evaluate to             return(N ); Q                                  return
+integers, denoted by x[M1 , . . . , Mm ], thus modeling arrays of         let x[i] : T = O[M1 , . . . , Ml ](N ) in P else P ′
+                                                                                e
+variables. Note that some function symbols are pre-defined,                                                              oracle call
+such as M = N for the equality test (using infix notation for                   R
+                                                                          x[ei] ← T ; P                                  random number
+practicality), and M ̸= N for the inequality test. Other terms
+                                                                          if M then P else P ′                           conditional
+will be built with function symbols modeling computations
+                                                                          find u[ei] = i ≤ n suchthat defined(M1 , . . . , Ml ) ∧ M
+for which we do not specify a concrete implementation (but
+                                                                             then P else P ′                             array lookup
+may specify functional or security properties), such as an
+                                                                          insert Tbl (M1 , . . . , Ml ); P               insert in table
+encryption function symbol enc(M, N ).
+   A game is defined by an oracle definition Q, which defines             get Tbl (x1 [ei] : T1 , . . . , xl [ei] : Tl )
+the set of oracles available to the attacker. Nil 0 defines no               suchthat M in P else P ′                    get from table
+oracle. Some oracles can be made available in parallel, using             event e(M1 , . . . , Ml ); P                   event
+Q | Q′ . The same oracle can be replicated n times using
+foreach i ≤ n do Q; the copies are indexed by the replication                          Fig. 1. Syntax for games (simplified)
+index i ∈ {1, . . . , n}. And finally, an oracle definition may
+actually declare an oracle O[ei](x[ei] : T ) := P , where x[ei] is
+the variable storing the argument passed by the attacker when         stored in the array cell u[ei], and P is executed. (When several
+calling the oracle, T is its type, and P is the actual code of the    successful values of i are found, one of them is chosen ran-
+oracle, its oracle body. The notation ei represents a sequence        domly with uniform probability.) Otherwise, P ′ is executed.
+of replication indices i1 , . . . , im that must correspond to the    The full calculus of C RYPTOV ERIF has a more general find
+current replication indices at the oracle definition: replications    construct, with multiple indices and then branches. For each
+foreach i ≤ n do Q can be nested and the current replication          variable access x[M1 , . . . , Mm ], either x must be syntactically
+indices at a program point are the indices ik of the replications     in scope and M1 , . . . , Mm are the current replication indices,
+foreach ik ≤ nk do Q enclosing that program point. All                or the definition of x[M1 , . . . , Mm ] is guaranteed by a defined
+definitions of variables must use the current replication indices,    condition of a find construct. To lighten notations, indices can
+which helps to make sure that variables are set at most once.         be omitted when they are the current replication indices.
+Oracles are also indexed by the current replication indices so           Tables allow for instance to store the long term keys of
+that the attacker can call a specific copy of an oracle by using      agents. A table Tbl can be seen as a list of tuples; insert
+the appropriate indices.                                              Tbl (M1 , . . . , Ml ); P inserts the element M1 , . . . , Ml in the
+   An oracle body is made of commands, and finalized by a             table Tbl and then runs P , and get Tbl (x1 : T1 , . . . , xl : Tl )
+                                                  R
+potential return value. The command x[ei] ← T ; P samples             suchthat M in P else P ′ tries to find an element (x1 , . . . ,
+uniformly at random from the set of values given by the               xl ) in the table Tbl such that M is true. If there exists such
+type T , stores the result inside the array cell x[ei], and runs      an element, then it executes P with x1 , . . . , xl bound to that
+P . Oracles can use conditionals with if M then P else P ′ .          element. Otherwise, it executes P ′ .
+Remark that the term M must then be of type bool , and recall            The command return(N ) returns the value of a term N
+that we can compute equality inside terms.                            to the caller. The current oracle then terminates, and control
+   The find construct is the one that allows to access variables      is given back to the caller. When terminating, an oracle can
+out of their scope; it allows “magical” communications be-            specify a new set of oracles that become available to the
+tween protocol participants, which is convenient to express           attacker; return(N ); Q thus also executes the given Q defi-
+security properties and cryptographic games obtained after            nition. An oracle can also terminate without any continuation
+exploiting those properties. Formally, it performs an array           nor returning any value by using the yield instruction, which
+lookup: find u[ei] = i ≤ n suchthat defined(M1 , . . . , Ml ) ∧       corresponds to terminating with an error.
+M then P else P ′ looks for an index i ∈ {1, . . . , n} such             The oracle call let x[ei] : T = O[M1 , . . . , Ml ](N ) in P else
+                                                                        ′
+that the array cells in terms M1 , . . . , Ml are defined and         P calls oracle O with indices M1 , . . . , Ml and with argument
+the term M is true. When such an index is found, it is                N . When oracle O terminates with return, the returned result
+is stored in x[ei] and P is executed. When oracle O terminates                expressed in a pi-calculus. Security was then defined by
+with yield, P ′ is executed. The oracle call is currently not                 considering all the possible executions of C[P ] for all possible
+allowed in games manipulated by C RYPTOV ERIF. However,                       contexts C representing an attacker and also expressed inside
+its presence in the language is useful for the soundness proof of             the pi-calculus. As the pi-calculus was expressive enough
+C RYPTOV ERIF, in particular to deal with proofs by reduction.                to model any probabilistic Turing Machine, it did capture
+Moreover, allowing oracle calls paves the way for future                      classical computational attackers. Yet, expressing the security
+extensions of C RYPTOV ERIF, for sharing code by calling the                  by using such contexts does not allow considering quantum
+same oracle, for composition results, and for dealing with                    attackers, as they cannot be captured by the syntax for pro-
+loops encoded as recursive oracle calls.                                      tocols. To resolve this issue, we define a new semantics for
+    Finally, oracles can raise so-called events, by event e(M1 ,              C RYPTOV ERIF that directly includes an attacker interacting
+. . . , Ml ); P . Those do not model any actual computation made              with the set of oracles. The semantics will in fact be defined
+by the underlying protocol, but are used to model and reason                  for any black-box interactive attackers, which is a safe way
+over the possible executions of a protocol. We typically raise                to model a quantum attacker while ensuring we never reason
+an event whenever some key exchange participant finalizes a                   unsoundly over its inner quantum state.
+session and derives a key, and use it to define authentication                   We thus completely redefine the semantics, as presented
+by requiring that if a participant raises an event, then its                  here. We only give a high-level idea of the configurations and
+interlocutor raises a matching event.                                         semantic rules, and once again refer the reader to the technical
+                                                                              report [21] for the exhaustive version.
+Example 1 Consider a symmetric encryption function, de-                          From a high-level point of view, we inherit many elements
+fined by a triple of function symbols kgen : keyseed 7→                       from the previous semantics. The current state of the system
+skeys, enc : bitstring × skeys × seed 7→ bitstring and                        is modeled by a configuration. The possible evolution of the
+dec : bitstring × skeys 7→ bitstring ⊥ . Remark that in                       system is represented by a set of reduction rules between
+C RYPTOV ERIF, all function symbols represent deterministic                   configurations. The sequence of configurations obtained by
+functions. The key generation function kgen thus goes from                    these reduction rules is called a trace, which models one
+a seed type keyseed for the keys to the actual key space                      of the possible executions of the system. The semantics is
+skeys. Similarly, enc expects in addition to the plaintext and                probabilistic: each rule has an execution probability attached
+the key some randomness source from the seed space. The                       to it, and each trace of the system then occurs with a
+decryption function dec may fail; its return value is thus of                 probability computed from the probabilities of its steps. Each
+type bitstring ⊥ , the set of bitstrings extended with a dedicated            configuration contains a map E defining the current values
+failure symbol ⊥.                                                             of the variables, a set T storing the contents of tables, and a
+   We can define a small game in our syntax as:                               sequence µEv listing the previously raised events.
+foreach i′ ≤ n′ do Oinit [i′ ](y[i′ ] : bitstring) :=                            The new additions to the semantics aim at modeling the
+        R                                                                     attacker as a black-box interactive machine interacting with a
+   r[i′ ] ← keyseed ; return(true);                                           set of oracles. To enable oracle calls both from the attacker as
+   foreach i ≤ n do Oe [i′ , i](x[i′ , i] : bitstring) :=                     well as other oracles, we extend configurations with a stack
+                R
+     r′ [i′ , i] ← seed ; return(enc(x[i′ , i], kgen(r[i′ ]), r′ [i′ , i]))   St to represent the nested oracle calls. The attacker is at
+Each copy of the oracle Oinit defines a new key by sampling                   the bottom of the stack and can perform a new oracle call
+r inside the key seed space, then simply gives back the control               whenever it receives an answer to its previous query. The
+to the attacker by returning true. (Its argument y[i′ ] is not used           top of the stack contains the oracle being executed. When a
+and could be omitted.) This oracle can be used to instantiate                 command of this oracle is executed, it is simply removed and
+up to n′ distinct keys, and each time it gives access to a                    the rest of the oracle remains on the top of the stack, until a
+new oracle Oe , that can itself be called up to n times. The                  return command is executed. The oracle is then popped from
+attacker is expected to give some input message x[i′ , i], and                the stack and the returned value is passed either to the next
+obtains in return the encryption of this message under the                    oracle on the stack or to the attacker. The configuration also
+key kgen(r[i′ ]), each time with an independent fresh random                  contains the set of callable oracles Q, where called oracles are
+r′ [i′ , i].                                                                  removed from the set and new oracles may be added during
+    Omitting current replication indices and unused arguments                 the execution.
+of oracles, this game can also be written:                                       We now turn to formally defining those elements.
+                                                                                    a) Configurations: The semantics depends on an attacker
+                                        R
+   foreach i′ ≤ n′ do Oinit := r ← keyseed ; return(true);                    that may interact with the oracles. We consider attackers A
+      foreach i ≤ n do Oe (x : bitstring) :=                                  from a recursively defined attacker space BB, that are proba-
+            R                                                                 bilistic functions of type A : Bitstring 7→ Distr (Bitstring ×
+        r′ ← seed ; return(enc(x, kgen(r), r′ ))
+                                                                              BB). To each input, the attacker A gives out a probability
+B. Semantics                                                                  distribution yielding a bit-string and a new attacker. It models
+  The previous C RYPTOV ERIF semantics did not directly                       an interactive black-box attacker that given an input, gives
+include an attacker, and only reasoned over a protocol P                      back with some probability both an output and its next attacker
+step. Here, Bitstring = {0, 1}∗ is the set of concrete bit-
+strings, and we implicitly rely on the efficient bijections from                                      {(σ, µ 0)} ⊎ Q ⇝ Q                        (Nil)
+types and oracle names to concrete bit-strings so that the                              µ
+                                                                                   {(σ, (Q1 | Q2 ))} ⊎ Q ⇝ {(σ, Q1 ), (σ, Q2 )} ⊎ Q             (Par)
+attacker can interact with the oracles.                                                {(σ, µ foreach i ≤ n do Q)} ⊎ Q
+   In the semantics, each term or command is labeled with a                                                                                    (Repl)
+                                                                                         ⇝ {(σ[i 7→ a], Q) | a ∈ [1, n]} ⊎ Q
+program point µ. A semantic configuration is a tuple E, St,                            µ e
+Q, T , µEv , where                                                                 {(σ, O[i](x[ei] : T ) := P )} ⊎ Q
+                                                                                                                                          (DefOracle)
+                                                                                     ⇝ {(σ, µ O[σ(ei)](x[ei] : T ) := P )} ⊎ Q
+   • E is an environment mapping array cells to values.
+   • St is an execution stack of the form (σ0 , P0 ) :: . . . ::                         reduce(Q) is the normal form of Q by ⇝
+        (σl , Pl ) :: A where Pj are oracle bodies and σj are
+        the associated mapping sequences which give the values                                 Fig. 2. Semantics for oracle definitions
+        of replication indices. The oracle body P0 is the one
+        currently being executed, and the oracle bodies P1 , . . . ,
+        Pm correspond to oracle calls that have not returned yet.              rules (Par) and (Repl) respectively expand parallel composi-
+        The stack always contains at least one pair (σj , Pj ) and             tions and replications, and the rule (DefOracle) evaluates the
+        always contains as a last element an attacker A.                       replication indices in an oracle declaration.
+                                                                                                        p
+        The sequence σ = [i1 7→ a1 , . . . , im 7→ am ] is a sequence             We now define −      →t , by assuming that oracle definitions in Q
+        of mappings from replication indices to integers ij 7→ aj .            in configurations E, St, Q, T , µEv are always in normal form
+        Its image Im(σ) is the sequence of integers a1 , . . . , am .          by ⇝, so they always start with an oracle declaration. The full
+   • Q is the multi-set of oracle declarations running in paral-
+                                                                               semantics has around 50 rules, we describe 7 in Fig. 3 and we
+        lel with P0 (the top of the stack St), with their associated           omit, e.g., the reductions that evaluate terms M to concrete
+        mapping sequences giving values of replication indices.                values a and assume that all terms are already evaluated.
+        It is the set of callable oracles.                                        All the rules execute the current command of the oracle at
+   • T defines the contents of tables. It is a list of                         the top of the execution stack. Rule (Insert) naturally inserts
+        Tbl (a1 , . . . , am ) indicating that table Tbl contains the          the new value (a1 , . . . , al ) inside the given table Tbl . (New)
+        element (a1 , . . . , am ).                                            performs a random sampling over the domain of the type: it
+   • µEv is a sequence representing the events executed so                     takes one concrete value a ∈ T , extends the environment E
+        far. Each element of the sequence is of the form (µ, e          a) :   to map the variable x[σ(ei)] to this value, and then continues
+        e(a1 , . . . , am ), meaning that the event e(a1 , . . . , am ) has    the execution. This reduction can then be executed with
+        been executed at a program point µ with replication                    probability DT (a), which denotes the probability of sampling
+        indices evaluating to e    a.                                          a in T (1/|T | for the uniform distribution). (If1) directly
+                                                                               resolves a positive conditional branching (recall that terms are
+   Such a configuration effectively captures the possible states
+                                                                               already evaluated, as other omitted reduction rules would take
+of a given protocol and attacker at some point in time, along
+                                                                               care of evaluating the actual condition M to either true or
+with some bookkeeping tailored for security proofs.
+                                                                               false). A similar rule deals with false conditions. Rules for find
+        b) Execution Rules: The semantics is defined by reduc-
+                                                   p                           and get are more complex, and are fundamentally unchanged
+tion rules of the form E, St, Q, T , µEv −         →t E ′ , St′ , Q′ , T ′ ,
+      ′                                                                        from the pi-calculus version, so we prefer omitting them here.
+µEv meaning that E, St, Q, T , µEv reduces to E ′ , St′ , Q′ ,
+                                          p                                    Rule (Event) adds the executed event to µEv .
+T ′ , µEv ′ with probability p. In −      →t , the index t just serves
+                                                                                  Rule (OracleCall) calls oracle O[a1 , . . . , al ]: it collects in
+in distinguishing reductions that yield the same configuration
+                                                                               multiset S the available oracles with matching name O and
+with the same probability in different ways, so that the
+                                                                               indices a1 , . . . , al . When no matching oracle is found, execu-
+probability of a certain reduction can be computed correctly:
+                                                                               tion blocks. Otherwise, we choose one at random (σ ′ , Q0 ) and
+        Pr[E, St, Q, T , µEv → E ′ , St′ , Q′ , T ′ , µEv ′ ] =                call it: we store the argument b of the call in the parameter
+                                                                               x[ie′ ] of Q0 , by extending the environment E; we remove the
+        P
+                        p                           p
+                        →t E ′ ,St′ ,Q′ ,T ′ ,µEv ′
+          E,St,Q,T ,µEv −
+                                                                               called oracle from the set of available oracles Q; and we
+This allows us to define the probability of a trace Tr =                       push the body of the called oracle on the stack to execute
+                            p1         pm−1
+E1 , St1 , Q1 , T1 , µEv 1 −→t1 . . . −−−→tm−1 Em , Stm , Qm ,                 it. The called oracle is removed from the available oracles
+Tm , µEv m as Pr[Tr ] = p1 × . . . × pm−1 . Bounding the                       so that it cannot be called again. If the considered oracle is
+probability of bad traces violating the security property will                 an instance of a replicated oracle, only one copy is removed
+then be the goal of C RYPTOV ERIF reasonings.                                  and the others remain. The probability expresses the uniform
+                               p
+   To define the relation −    →t that will capture the execution              choice of (σ ′ , Q0 ) in S: S(σ ′ , Q0 ) is the number of copies
+of the commands, we first define how to reduce an oracle                       of (σ ′ , Q0 ) in the multiset S and |S| is the cardinal of S. As
+definition to the corresponding set of newly defined oracles,                  we show below (Lemma 1, Item 2), S contains at most one
+using the auxiliary reduction relation ⇝, which transforms                     element, so in fact S(σ ′ , Q0 )/|S| = 1. Rule (Return) performs
+configurations of the form Q. We provide the natural reduction                 a return: it pops the return from the stack, replaces the caller
+rules in Fig. 2, where (Nil) removes nil definitions, the                      P0 with its in branch P1 on the top of the stack and stores the
+return value d in the variable x[ei] of the caller by extending               and two different definitions of the same oracle O in Q0
+the environment E. Hence, it executes the in branch P1 of                     are in different branches of a if, find, or get.
+the caller with x[ei] equal to the returned value. A similar rule          3) every occurrence of a variable access x[M1 , . . . , Mm ]
+deals with yield.                                                             in Q0 is either
+   Finally, we present the main rule corresponding to an inter-                 • syntactically under the definition of x[M1 , . . . , Mm ]
+action with our black box attacker. Rule (AttIO) corresponds                       (in which case M1 , . . . , Mm are in fact the current
+to the attacker receiving a return value and then triggering a                     replication indices at the definition of x), or
+new oracle call in response. The stack contains a last oracle                   • in a defined condition of find, or
+doing a return with value d to the attacker who is next in                      • x[M1 , . . . , Mm ] occurs in the condition M of find
+                                                 d
+the stack. A(d) then defines a distribution DA     , from which                    u[ei] = i ≤ n suchthat defined(M1′ , . . . , Ml′ ) ∧ M
+we sample the next message sent by the attacker m0 as well                         then P else P ′ and x[M1 , . . . , Mm ] is a subterm of
+as the next attacker step A0 . m0 defines the next oracle call,                    Mj′ for some j ≤ l, or
+with an oracle name O with its replication indices a1 , . . . , ak ,            • x[M1 , . . . , Mm ] occurs in the then branch P of find
+as well as the value for the input parameter b. We build the                       u[ei] = i ≤ n suchthat defined(M1′ , . . . , Ml′ ) ∧ M
+multiset S of potential oracles matching this call, and take                       then P else P ′ and x[M1 , . . . , Mm ] is a subterm of
+one at random that we actually call by putting it on top of the                    Mj′ {u[ei]/i} for some j ≤ l (Mj′ {u[ei]/i} means Mj
+stack, dropping it from Q, and setting its input variable to b                     with u[ei] substituted for i).
+inside the environment E. The oracles available after this step
+                                                                           4) Q0 is well-typed.
+are the oracles available before Q, plus the oracles defined
+after the executed return Q′ = reduce({(σ, Q)}), minus the                  Item 1 guarantees that no variable will be bound twice
+oracle that the attacker calls (σ ′ , Q0 ).                              in an execution (the second part of the item guarantees that
+     c) Traces: The semantics enables us to define the set of            no definition can be executed twice with the same current
+traces of a protocol for a given attacker, where we simply               replication indices), Item 2 does the same for oracles, and
+consider all possible reductions from an initial game directly           Item 3 guarantees that all variable accesses are over defined
+giving control to the attacker.                                          variables. In the last two cases of Item 3, the definition of
+                                                                         x[M1 , . . . , Ml ] is guaranteed by the defined condition of the
+Definition 1 The initial configuration for running oracle def-           find. Item 4 guarantees that Q0 is well-typed: in short, the
+inition Q against attacker A is initConfig(Q, A) = ∅, (σ0 ,              type system maps each oracle to a type that specifies the type
+return(start)) :: A, Q, ∅, ∅ where Q = reduce({(σ0 , Q)}),               of its indices, its argument, and its result and each variable
+σ0 is the empty mapping sequence, and start is a constant.               to a type that specifies the type of its indices and of its
+                                                                         content. It guarantees that all definitions of the same oracle
+  The set of possible executions starting from this initial              or variable have the same type, that oracles are called with
+configuration then corresponds to the set of traces of the               indices, argument, and result of the appropriate type, that
+protocol, defined for a given attacker.                                  returned terms, arguments of functions, indices of variables,
+                                                                         arguments of events, elements of tables have the appropriate
+Definition 2 A trace of Q for attacker A is a trace that starts          type, and that conditions of if, find, and get are of type bool .
+                                                     p1
+from initConfig(Q, A): Tr = initConfig(Q, A) −→t1 . . .                     This invariant is preserved by all game transformations per-
+ pm−1
+−−−→tm−1 Conf m . Let Tr A,Q be the set of all traces of Q               formed by C RYPTOV ERIF. From this invariant, we can obtain
+for an attacker A ∈ BB, and Tr A,Q                                       a set of properties that hold during execution as summarized
+                               full be the subset of traces of
+Tr A,Q whose last configuration Conf m cannot be reduced.                in the following lemma.
+
+C. Syntax Restrictions and Invariants                                    Lemma 1 If an oracle definition Q satisfies Invariant 1, then
+                                                                         for any attacker A ∈ BB, for any trace Tr ∈ Tr A,Q , for any
+   C RYPTOV ERIF enforces a set of well-formedness restric-
+                                                                         Conf ∈ Tr , we let E be the environment of Conf and we
+tions on the possible initial games, that enables us to derive
+                                                                         have that:
+invariants on the concrete executions. We present here a core
+invariant that summarizes the exhaustive list of [21].                      1) E contains at most one definition for each variable;
+                                                                            2) for every application of the rules (OracleCall) and
+                                                                               (AttIO) in Tr , there is at most one element in S;
+Invariant 1 (Single and correct definitions, typing) The
+                                                                            3) if Conf accesses x[e            a] ∈ Dom(E).
+                                                                                                    a], then x[e
+oracle definition Q0 satisfies Invariant 1 if and only if
+                                                                            4) Conf is well-typed.
+  1) in every definition of x[i1 , . . . , im ] in Q0 , the indices
+      i1 , . . . , im of x are the current replication indices, and        This lemma is an aggregation of the lemmas proved in the
+      two different definitions of the same variable x in Q0             long version [21, Sections 2.4.3 to 2.4.6]. Intuitively, all the
+      are in different branches of a if, find, or get.                   points are consequences of Invariant 1 along with a proof
+  2) in every definition of oracle O[i1 , . . . , im ] in Q0 , the in-   by induction over the derivation of the trace; each item is a
+      dices i1 , . . . , im of O are the current replication indices,    consequence of the item of Invariant 1 with the same number.
+                                                                                  1
+           E, (σ, µ insert Tbl (a1 , . . . , al ); P ) :: St, Q, T , µEv −
+                                                                         → E, (σ, P ) :: St, Q, (T , Tbl (a1 , . . . , al )), µEv              (Insert)
+                                                                              ′
+                                                            a∈T            E = E[x[σ(ei)] 7→ a]
+                                                                                                                                                (New)
+                                              R                            DT (a)
+                               E, (σ, µ x[ei] ← T ; P ) :: St, Q, T , µEv −−−−→N (a) E ′ , (σ, P ) :: St, Q, T , µEv
+                                                                                                1
+                              E, (σ, µ if true then P else P ′ ) :: St, Q, T , µEv −
+                                                                                   → E, (σ, P ) :: St, Q, T , µEv                                 (If1)
+                                                                      1
+       E, (σ, µ event e(a1 , . . . , al ); P ) :: St, Q, T , µEv −
+                                                                 → E, (σ, P ) :: St, Q, T , (µEv , (µ, Im(σ)) : e(a1 , . . . , al ))           (Event)
+                               P0 = let x[i] : T = O[a1 , . . . , al ](b) in P1 else P2
+                                                      e
+                                 ′′
+                ′
+      S = {(σ , Q) ∈ Q | Q = µ O[a1 , . . . , al ](x′ [ei′ ] : T ′ ) := P ′ and b ∈ T ′ for some µ′′ , σ ′ , x′ , ei′ , T ′ , P ′ }
+                                                             ′
+                          (σ ′ , Q0 ) ∈ S      Q0 = µ O[a1 , . . . , al ](x′ [ei′ ] : T ′ ) := P ′
+                                                                                                                                          (OracleCall)
+                                                               S(σ ′ ,Q0 )/|S|
+                          E, (σ, µ P0 ) :: St, Q, T , µEv −−−−−−−−→O(σ′ ,Q0 )
+                               E[x′ [σ ′ (ei′ )] 7→ b], (σ ′ , P ′ ) :: (σ, µ P0 ) :: St, Q ⊎ \{(σ ′ , Q0 )}, T , µEv
+               d∈T             Q′ = reduce({(σ, Q)})                P0 = let x[ei] : T = O[a1 , . . . , ak ](b) in P1 else P2
+                    ′                                              1
+                                                                                                                                              (Return)
+                                                                   → E[x[σ ′ (ei)] 7→ d], (σ ′ , P1 ) :: St, Q ⊎ Q′ , T , µEv
+         E, (σ, µ return(d); Q) :: (σ ′ , µ P0 ) :: St, Q, T , µEv −
+                                                Q′ = reduce({(σ, Q)})
+                                                ′′
+      S = {(σ ′ , Q) ∈ Q ⊎ Q′ | Q = µ O[a1 , . . . , ak ](x′ [ei] : T ′ ) := P ′ and b ∈ T ′ for some µ′′ , σ ′ , x′ , ei, T ′ , P ′ }
+                                                              ′
+                               (σ ′ , Q0 ) ∈ S     Q0 = µ O[a1 , . . . , ak ](x[ei] : T ) := P ′
+                                             d                       Rd
+                                     A(d) = DA             m0 , A0 ← DA                m0 = (O, a1 , . . . , ak , b)
+                                                                                                                                               (AttIO)
+                                                                          S(σ ′ ,Q0 )/|S|×DA
+                                                                                           d
+                                                                                             (m0 ,A0 )
+                        E, (σ, µ return(d); Q) :: A, Q, T , µEv −−−−−−−−−−−−−−−−−→O(σ′ ,Q0 ,A0 ,a1 ,...,ak ,b)
+                             E[x[σ ′ (ei)] 7→ b], (σ ′ , P ′ ) :: A, Q ⊎ Q′ ⊎ \{(σ ′ , Q0 )}, T , µEv
+                                                          Fig. 3. Semantics for oracle bodies (partial)
+
+
+
+The type system is extended to configurations by typing each                          final event. Formally, an evaluation context C is a context built
+oracle definition and body in it, as well as the environment,                         from [ ], Q | C, C | Q.
+the contents of tables, and the executed events.                                         From now on, we consider in this section a fixed attacker
+     a) Implementation: The previous implementation of                                space BB, and all security definitions are given for this
+C RYPTOV ERIF provided an optional oracle-based input syn-                            BB. There must exist a function allowing to extract a run-
+tax, that was translated into the main internal dialect of the                        time from the execution of an attacker. Classically, BB is
+pi-calculus. We updated the implementation to reverse the                             the set of interactive probabilistic Turing machines, but the
+situation: internally, C RYPTOV ERIF only relies on the oracle                        theory of C RYPTOV ERIF is now sound for any kind of
+semantics, and the input syntax as a pi-calculus is translated                        black-box interactive attacker, where the computational power
+to oracles. All invariant checks have also been implemented,                          is restricted by the cryptographic axioms. As cryptographic
+including the new invariant (Invariant 1, Item 2) and the typing                      reductions sound for a black-box interactive attacker are also
+of oracles. This makes the core of C RYPTOV ERIF closer to                            sound for quantum Turing Machines, this notably implies the
+classical cryptographic proofs, and thus easier to understand                         post-quantum soundness of C RYPTOV ERIF, by considering as
+and verify.                                                                           BB the set of interactive quantum Turing machines.
+                                                                                         We then define the (simplified) notion of indistinguisha-
+              III. P OST-Q UANTUM S OUNDNESS                                          bility used by C RYPTOV ERIF, where for any process Q,
+   Having updated the semantics of C RYPTOV ERIF to both be                           PrA [Q : S] is the probability that an execution of Q raises
+closer to classical cryptographic proofs as well as inherently                        P dedicated attacker success event S, which corresponds to
+                                                                                      the
+consider a black-box attacker, we now turn to the core goal,                             Tr ∈Tr A,Q ,∃(E,St,Q,T ,µEv )∈Tr ,∃µ,∃e
+                                                                                                full                                a):S∈µEv Pr[Tr ].
+                                                                                                                               a,(µ,e
+defining a post-quantum sound notion of security, and updating
+the old game transformations.
+                                                                                      Definition 3 (Indistinguishability) Let Q and Q′ be two
+A. Black-box Interactive Attackers                                                    games that satisfy Invariant 1.
+   Our attacker will be built in two parts, the black-box attacker                      An evaluation context C is said to be acceptable for Q if
+A ∈ BB, as well as an evaluation context C, useful, e.g., to                          and only if C and Q do not use any common variable nor any
+push code inside the attacker in reduction proofs, but also for                       common table, and C[Q] satisfies Invariant 1.
+the attacker A to return its final result by raising a dedicated                        We write Q ≈p Q′ when, for all attackers A ∈ BB, for all
+evaluation contexts C acceptable for Q and Q′ ,                           C such that Q ≈0 C[L], replacing L with R inside
+                                                                          C and simplifying the result, yielding Q ≈0 C[L] ≈p′
+        | PrA [C[Q] : S] − PrA [C[Q′ ] : S]| ≤ p(A, C)                    C[R] ≈0 Q′ , with p′ (A, C ′ ) = p(A, C ′ [C]). This
+                                                                          reasoning corresponds to a proof by reduction and is valid
+This definition formalizes that the probability that algorithms
+                                                                          as long as the axiom is valid.
+A and C distinguish the games Q and Q′ is at most p(A, C).
+Notice that the attacker context is not allowed to access the       All those techniques are intuitively post-quantum sound, and
+variables of Q nor use the same tables, as it would otherwise       C RYPTOV ERIF did not rely on any dangerous technique such
+be able to obtain any secret value. The probability p typically     as rewinding. However, it was crucial to go over all the sound-
+depends on the run-time of A and C but may also depend on           ness proofs of the existing game transformations, propagating
+other parameters, such as the number of queries to each oracle      the presence of the black-box attacker, and verifying that
+made by C or A. That is why p takes as arguments the whole          indeed the state of the attacker was never reasoned over.
+algorithms A and C. In practice, C RYPTOV ERIF instantiates            We adapted in [21] the soundness proofs of all game
+p by a function of the run-time of the attacker, the numbers        transformations, that we do not detail any more here. In effect,
+of queries to the oracles, the probability of breaking the          the core argument was to make the semantics more abstract in
+security assumptions made on primitives, and the probability        terms of the attacker, and ensure that this propagated correctly
+of eliminated collisions with random values.                        in all the remaining proofs. No major technical hurdle was
+                                                                    encountered, and the propagation was thus mainly a long and
+B. Sound Game Transformations                                       careful task.
+   In essence, C RYPTOV ERIF implements a set of transforma-           Formally, we thus have that the semantics and all transfor-
+tions over games, where the original and transformed games          mations are valid against a black-box interactive attacker. This
+are indistinguishable. For instance, a basic valid transformation   class of attackers is very broad, and does not in fact make any
+is to remove dead else branches in conditionals, as we can triv-    assumption on the computational power of the attacker: the
+ially prove that (O := if false then P else P ′ ) ≈0 (O := P ).     only restriction is that it interacts classically over the network
+Another captures the low probability of collisions between          with the other agents. This class notably includes the quantum
+                                      R       R                     attacker, which computational power is then restricted by the
+random samplings: (O := x ← T ; y ← T ; return(x =
+y)) ≈ |T1 | (O := return(false)). More generally, the reasoning     cryptographic axioms.
+techniques of C RYPTOV ERIF can be split into five categories:         From a user point of view on the implemented tool, our
+                                                                    main result can be summarized as an informal core theorem.
+   • a set of syntactical transformations fully preserving the
+      set of traces, like swapping the order of two com-
+      mands, renaming a variable, replacing a variable with         Theorem 1 (Informal PQ soundness of C RYPTOV ERIF)
+      its value, . . . For all these transformations, the final     A C RYPTOV ERIF proof only relying on post-quantum sound
+      game is perfectly indistinguishable from the initial one,     cryptographic assumptions holds against a quantum attacker.
+      independently of the power of the attacker.
+   • collecting a set of facts that hold at some program points     C. Cryptographic Assumptions
+      (which variables are defined, which conditionals and thus        C RYPTOV ERIF comes with a library of pre-defined crypto-
+      equations are true, . . . ); infer new facts by combining     graphic assumptions, written in an optimized fashion for its
+      equalities and eliminating collisions; and use those facts    automated reasoning. It includes symmetric and asymmetric
+      to simplify the game or to prove security properties. Here,   encryptions with various security assumptions, groups with
+      the probability of distinguishing the final game from the     Diffie-Hellman assumptions (DDH, Computational Diffie-
+      initial one is bounded by the probability of the eliminated   Hellman (CDH), Gap Diffie-Hellman (GDH), . . . ), MACs
+      collisions, independently of the power of the attacker.       and signatures with Existential Unforgeability under Adaptive
+   • performing up-to-bad reasoning: the final game can be
+                                                                    Chosen Message Attacks (EUF-CMA), the ROM, collision-
+      distinguished from the initial one only when an event is      resistance, and PRF assumptions for hash functions, . . . We
+      raised, and C RYPTOV ERIF bounds the probability of that      adapted this library for post-quantum proofs.
+      event, following Shoup’s lemma [22].
+                                                                          a) KEMs: Since KEMs are essential post-quantum prim-
+   • guessing transformations, in which one guesses the tested
+                                                                    itives, and were not included in the library of primitives, we
+      session, the value of a variable, or which branch of a
+                                                                    added them. A KEM is defined by three algorithms:
+      test is taken. For these transformations, the effect on                       R
+      probabilities is also independent of the attacker.              • sk e , pk e ← KEM.keygen() is used to sample a fresh
+   • the application of a cryptographic assumption. In C RYP -          secret/public key-pair.
+                                                                                  R
+      TOV ERIF , cryptographic assumptions are represented by         • ct, ss ← encaps(pk e ) is used to encapsulate a new
+      indistinguishability axioms L ≈p R (such an axiom for             shared secret ss based on the public key pk e , producing
+      Indistinguishability under Adaptive Chosen-Ciphertext             the ciphertext ct. One can think of it as sampling a fresh
+      Attacks (IND-CCA2) of KEMs is given below). Such                  secret ss, then using an asymmetric encryption scheme
+      an axiom is applied to a game Q by finding a context              to encrypt this shared secret for some public key.
+           Game Q0 :                                                security proof, this assumption allows us to replace the shared
+                         R                                          secret derived by two honest parties by the fresh secret k fully
+           Oinit := r ← Tkeyseed ; return(pkgen(r));
+             foreach i ≤ n do Oe (x : pkey) :=                      independent of anything seen by the attacker.
+                return(encaps(x))                                      We also added a definition for Indistinguishability under
+           | foreach i ≤ n do Od (x : bitstring) :=                 Chosen-Plaintext Attacks (IND-CPA) of KEMs, similar to the
+                return(decaps(x, skgen(r)))                         IND-CCA2 definition but without decapsulation oracle.
+                                                                          b) Insecure Primitives: We added definitions for primi-
+           Game Q1 :                                                tives with only assumptions that do not depend on the power
+                         R                                          of the attacker, that is, we keep definitions of functions,
+           Oinit := r ← Tkeyseed ; return(pkgen(r));
+                                                                    functional assumptions (such as decrypting a ciphertext with
+             foreach i ≤ n do Oe (x : pkey) :=
+                                                                    the correct key yields the cleartext) and collisions whose
+                if x = pkgen(r) then
+                     R             R
+                                                                    probability does not depend on the attacker, but we remove
+                  k ← Tss ; ct, ss ← encaps(x);                     security assumptions. Then, a one-line change in a model
+                  insert E(k, ct); return((ct, k))                  allows us to switch from a secure primitive to an insecure
+               else return(encaps(x))                               one in the presence of quantum attackers.
+           | foreach i ≤ n do Od (x : bitstring) :=                       c) The Post-Quantum Library: Combing through the
+               get E(k, ct) suchthat x = ct in                      library, we identified which assumptions do not have a post-
+                  return(k)                                         quantum instantiation, typically using the NIST standardiza-
+               else return(decaps(x, skgen(r)))                     tion process as a witness. Overall, only the Diffie-Hellman
+                                                                    assumptions and the ROM do not have valid instantiations.
+            Fig. 4. IND-CCA2 for KEMs in C RYPTOV ERIF
+                                                                    We built a variant of the library only containing post-quantum
+                                                                    sound assumptions, which enables us to state our final practical
+  •   Finally, ss ← decaps(ct, sk e ) enables one to decapsulate    result: C RYPTOV ERIF proofs only relying on the post-quantum
+      the ciphertext, yielding the shared secret ss or in case of   library yield concrete guarantees against quantum attackers.
+      failure a dedicated constant ⊥.                                                     IV. C ASE S TUDIES
+We added to the library the suitable IND-CCA2 assumption              Given the importance of the corresponding protocols, we
+for KEMs. While the IND-CCA2 assumption for asymmetric              chose to start with proofs for the IETF drafts for hybrid
+encryption states that the encryption of any two messages           variants of TLS 1.3 [5] and SSH [6]. A summary of our
+must be indistinguishable, the KEM variant only asks that           security results can be found in Table I, and we detail thereafter
+encryptions of any two random keys be indistinguishable. To         each of our modelings and proof method.
+define this assumption in C RYPTOV ERIF, we can, similarly
+to Example 1, first define a game where we set up one honest        A. Core Idea of Hybrid Proofs
+public key and the attacker has access to a decapsulation              In this section, we give the main ideas of how hybrid key-
+and encapsulation oracle for this key, as illustrated by game       exchanges are built, and how we can prove their security in
+Q0 in Fig. 4. In this game, the functions pkgen and skgen           C RYPTOV ERIF. We thus abstract away from TLS and SSH,
+generate the public key, resp. secret key, from a random            and consider a generic signed DH key exchange, where two
+                                                    R
+seed r, so that we have KEM.keygen() = r ← Tkeyseed ;               parties exchange ephemeral DH shares g a and g b , and compute
+return(skgen(r), pkgen(r)). The function encaps is defined          a shared secret g ab . To hybridize it, the core idea is to rely on
+                                                 R
+as an abbreviation encaps(x : pkey) = r′ ← Tencapsseed ;            a KEM that has a post-quantum secure instantiation.
+return(encaps r(x, r′ )) so that it generates random coins r′            a) Hybridizing a DH-Based Key-Exchange: We show
+and calls the deterministic function encaps r with these coins.     in Fig. 5 a common pattern used to hybridize a DH-based
+The game Q0 is the real-world version, where intuitively the        key exchange, by adding a KEM computation in parallel.
+attacker will interact with agents performing honest encapsu-       All hybrid parts in this figure are highlighted with a light
+lations and decapsulations. We then express IND-CCA2 by             gray background. The core idea is to integrate inside the
+assuming that this real-world is indistinguishable from an          key derivation a KEM shared secret, by using a dual-PRF
+idealized world defined as follows. For each new encapsulation      dPRF(g ab , ss). A dual-PRF ensures that if either of the two
+for the honest public key, we sample a completely fresh key,        arguments is a fresh random secret, then the output can
+and we store inside a table E the link between the ciphertext       be securely used as a derived key. That is, the security of
+and this fresh key. The decapsulation oracle checks whether         only one of the constructs is enough to get the full security.
+the attacker provided a ciphertext that corresponds to an honest    There are in fact multiple ways to define such a dual-PRF,
+one stored inside the table, in which case it returns the ideal     and in fact to combine KEMs, as explored in the so-called
+secret key. Otherwise, it decapsulates normally. We formalize       KEM combiners [23], [24]. We will see some of the concrete
+this intuition as Q1 in Fig. 4, and finally the IND-CCA2            instantiations over TLS and SSH.
+assumption corresponds to stating that Q0 ≈pIND Q1 . (This             Since dPRF takes as first argument the DH shared secret,
+is a simplified single public key version for clarity.) Inside a    it must be a PRF keyed with a random group element, and not
+                     Protocol             Security Property                        Cryptographic assumptions         Run-time        Model size
+                                          Authentication
+                                                                                   EUF-CMA, snPRF-ODH, PRF, CR       12 s           ∼ 420 LoC
+                     SSH [6]              Forward Secrecy
+                                                                                                                                     26 steps
+                                          Post-Quantum Forward Secrecy             EUF-CMA, IND-CCA2, PRF, CR        9s
+                                          Authentication (both sides)
+                 TLS [5]                                                           EUF-CMA, snPRF-ODH, PRF, CR       1028 s         ∼ 2000 LoC
+                                          Forward Secrecy
+      (0,0.5,1-RTT,PSK,Client Auth)                                                                                                18+10+33 steps
+                                          Post-Quantum Forward Secrecy      EUF-CMA, IND-CCA2, PRF, CR             933 s
+                                                                          TABLE I
+                                                 S UMMARY OF THE PROPERTIES PROVED IN C RYPTOV ERIF
+ The model size is in the number of Line of Codes (LoC), it is only to give an intuition on the relative complexity of the protocols and models. The steps
+correspond to the number of manually specified tactics that guide the proof. The run-time is the total time needed by C RYPTOV ERIF to automatically verify
+and complete the proof script. A laptop was used with 11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz and 30Gb of RAM. TLS is made of 3 separate
+ models capturing its possible handshake modes, generated by preprocessing; we give the total number of lines of the source files and the number of steps
+ for each proof (18 steps for the initial handshake, 10 for the handshake with non compromised PSK, and 33 for the handshake with compromised PSK).
+
+
+
+                    pk B                              sk B
+                    A LEX                            B LAKE                           whether a session continues. (This definition is similar to the
+                                                                                      one of [25]. It still differs in that in our more generic definition,
+                                                                                      the order of oracle calls does not matter, so that lrPRF-ODH
+                                                                                      is equivalent to rlPRF-ODH, and the attacker may evaluate
+            R
+   (a, g a ) ← DH.keygen()                                                            x 7→ dPRF(g ab , x) several times to distinguish it from a
+                R
+   sk e , pk e ← KEM.keygen()                                                         random function.) nnPRF-ODH can be proved from CDH and
+                                 g a , pk e
+                                                                                      ROM, or from DDH and PRF; mmPRF-ODH from GDH and
+                                                                                      ROM.
+                                                                                           b) Security Properties: In the classical setting, we con-
+                                                R
+                                     (b, g b ) ← DH.keygen()                          sider two main security properties:
+                                                R
+                                     ct, ss ← encaps(pk e )                              • authentication: whenever the Initiator derives a key, the
+                                     sig = sign((g a , g b , pk e , ct ), sk B )           Responder is authenticated to the Initiator and both agents
+                                     kB = dPRF((g a )b , ss )
+                                                                                           agree on the data used to derive the key;
+                                g b , sig, ct                                            • forward secrecy: as long as the long term keys were
+                                                                                           not compromised when the key exchange took place, the
+                                                                                           derived keys will remain secret.
+  Abort if not verify(sig, pk B )
+      R                                                                               On a DH-based key exchange, we typically expect to prove a
+  ss ← decaps(ct, sk e )
+  kA = dPRF((g b )a , ss )                                                            theorem such as: “Assuming the DH group and the dPRF
+                                                                                      satisfy PRF-ODH and the signature is EUF-CMA, the key
+                                                                                      exchange satisfies both authentication and forward secrecy”.
+      Fig. 5. Hybridization of a signed Diffie-Hellman key exchange                      Over a hybrid version, the first goal is still to prove such
+                                                                                      a theorem, to demonstrate that the update did not downgrade
+                                                                                      the security of the key exchange against classical attackers.
+just one keyed with a random bit-string as usual. Moreover,                              The second goal is to prove once again the forward secrecy,
+one often combines the PRF and DH assumptions, using the                              assuming that quantum attackers do not exist yet but will
+Pseudorandom Function Oracle Diffie-Hellman (PRF-ODH)                                 exist in the future. Crucially, we do not make assumptions
+assumption [25]. C RYPTOV ERIF supports several variants of                           over the security of DH values and we consider that the
+PRF-ODH. The most basic PRF-ODH notion, nnPRF-ODH,                                    signature scheme is EUF-CMA up to a point. We then prove
+says that an attacker that has g a and g b for random a, b has                        that “Assuming that the KEM is IND-CCA2 against a quantum
+a negligible probability of distinguishing x 7→ dPRF(g ab , x)                        attacker, dPRF is a PRF against a quantum attacker where
+from a random function. In general, the lrPRF-ODH notion                              the key is the second argument, the signature is EUF-CMA
+additionally gives the attacker access oracles Oa (x, Y ), which                      against a classical attacker, and quantum attackers do not
+returns dPRF(Y a , x) when Y a ̸= g ab , and Ob (x, X), which                         exist yet when the key exchange is performed, the key-exchange
+returns dPRF(X b , x) when X b ̸= g ab , where the letter l ∈ {n,                     satisfies forward secrecy against a quantum attacker”.
+s, m} (resp. r ∈ {n, s, m}) determines how many times oracle                             Interestingly, when proving forward secrecy, the property
+Oa (resp. Ob ) can be called: n means never, s means a single                         already explicitly allows for the compromise of the long-term
+time, m means multiple times. Both oracles return ⊥ when                              signing key. Such a compromise can be seen as modeling an
+they would compute dPRF(g ab , x), which the attacker tries to                        attacker suddenly having access to a quantum computer, and
+distinguish from random. Their presence allows one to prove                           being able to compromise the signature scheme.
+the protocol secure even if the attacker can test whether its                            To reach both goals in our C RYPTOV ERIF analyses, we will
+element Y or X is the expected one, for instance by seeing                            thus make two distinct proofs for each protocol model, one
+under PRF-ODH relying on the DH exchange, and another                     conclude the proof: we use PRF-ODH for DH to directly
+one under IND-CCA2 and PRF relying on the KEM.                            turn the derived key into a fresh key, resp. IND-CCA2
+   Notice that a third possible goal is to show authentication            to first turn the KEM shared secret into a fresh key and
+and forward secrecy, assuming quantum attackers exist during              next PRF to turn the derived key into a fresh key.
+the key exchange. For this property, we would show that             Note that to prove the forward secrecy property, we always
+“Assuming that, against a quantum attacker, the KEM is              prove some authentication property first, as it allows us to use
+IND-CCA2, dPRF is a PRF where the key is the second                 the security assumptions over the honest DH or KEM values.
+argument, the signature is EUF-CMA, the key-exchange sat-              All the security theorems presented next follow this high-
+isfies authentication and forward secrecy against a quantum         level schema, with adaptations based on the concrete case.
+attacker”. This goal is not considered in the candidate TLS
+and SSH drafts that we look at: they do not consider post-          B. Hybrid TLS 1.3
+quantum signatures. Moreover, for TLS, considering this goal
+                                                                       TLS is used to secure internet browsing, and is thus a
+would require updating the whole certificate chains to use
+                                                                    crucial target. During the development of TLS 1.3, its draft
+post-quantum signatures. However, we remark that our C RYP -
+                                                                    18 was analyzed with C RYPTOV ERIF in [7], [26], [27]. In this
+TOV ERIF proofs for the second goal also show this result,
+                                                                    work, we update the models to meet the actual final Request
+assuming post-quantum signatures, because they actually show
+                                                                    For Comments (RFC) of the standard, as well as analyze
+that “Assuming that the KEMs is IND-CCA2, dPRF is a
+                                                                    the current draft [5] for a hybrid variant of it. Compared
+PRF where the key is the second argument, and the signature
+                                                                    to the high-level view of Fig. 5, there are major differences
+is EUF-CMA when the key exchange is performed, the key-
+                                                                    complexifying the analysis, among which:
+exchange satisfies authentication and forward secrecy”. Note
+that, since post-quantum signatures provide the same security          • Several intermediate keys are derived during the key
+
+property (EUF-CMA) as classical signatures (although against              exchange in order to encrypt early data messages (the
+different attackers), we can reuse the same assumption for                0-RTT messages) and parts of the handshake.
+signatures in C RYPTOV ERIF.                                           • The key derivation contains multiple calls to some un-
+
+      c) Proof Methodology: When given an initial game                    derlying key derivation functions.
+stating the security of a protocol Q, C RYPTOV ERIF tries to           • After some initial handshake and first key derivation, it is
+
+automatically build a sequence of transformations in order to             possible upon a new connection to do a new handshake
+obtain an indistinguishability Q ≈p Qi , where the security is            that reuses one of the keys derived by the first handshake
+obvious in Qi , and we then get a bound on the advantage of               as a Pre-Shared Key (PSK).
+the attacker with the probability p given by C RYPTOV ERIF.            • After the first back and forth, the initiator can also include
+
+   On simple protocols, the automated heuristic is very effi-             in the last handshake message a signature to authenticate
+cient and can often directly build a proof. On our case studies,          itself (client authentication).
+we however have to guide the proof, by specifying in the               • Some initial messages take place during a so-called
+
+C RYPTOV ERIF tactic language the main steps of the proof.                algorithm negotiation, where the client and the server try
+   In all our case studies, whether we make the proof under               to agree on the ciphersuites to use.
+the DH-based assumption or the KEM-based assumption, we             The original C RYPTOV ERIF models captured for draft 18
+guide the proof by following some rather similar steps:             the handshakes with DH and/or PSK, with 0-RTT, 0.5-RTT,
+   1) Given the game A | B where A is the code of Alex              and 1-RTT, optional client authentication, and the possible
+       and B the code of Blake, we first duplicate their code       compromise of signature keys and of the PSK. They do
+       based on a conditional check. We test in B whether the       not include algorithm negotiation, resumption tickets (which
+       DH ephemeral, resp. KEM public-key, it receives has          may be used to store the PSK), nor post-handshake client
+       been generated by A. This test is implemented using          authentication. They delegate handshake encryption to the
+       the find construct. The code that follows the test is        attacker, by publishing the handshake encryption keys; hence,
+       duplicated: let Bh be the copy when the test succeeds        the C RYPTOV ERIF models give more power to the attacker
+       (B received honest values) and Bd the one when the test      than models including handshake encryption. We update the
+       fails (B received dishonest values). Similarly, we test in   original C RYPTOV ERIF models while preserving their scope.
+       A whether the DH ephemeral, resp. KEM ciphertext,                  a) Update to RFC from Draft 18: The main difference
+       has been sent by Bh . We define Ah and Ad similarly          between the final RFC [28] and draft 18 [29], and the
+       to Bh and Bd . C RYPTOV ERIF enables us to introduce         only one that impacts our proofs, is inside the key deriva-
+       such tests, as they preserve the possible executions.        tion, which was slightly updated. The TLS key derivation
+   2) Next, we use EUF-CMA, to show that Ad never suc-              relies on the HKDF construction [30], where a function
+       ceeds, because the signature check must fail (as by          HKDF-extract(IKM , salt) is used with some Input Keying
+       definition Ad received some dishonest values);               Material IKM to extract some clean randomness key, that
+   3) We now consider the ephemeral DH or KEM values                can then be used to derive many independent secrets with
+       used jointly by Ah and Bh , and apply the respective         Derive(key, label ) where two distinct labels yield two inde-
+       assumptions to turn the derived key into a fresh key and     pendent secrets. In draft 18, the key derivation proceeds as:
+  •  ES = HKDF-extract(PSK , 0)                                     classical EUF-CMA assumption for signatures, the hybrid
+  •  HS = HKDF-extract(DHE , ES )                                   TLS 1.3 handshake ensures forward secrecy even against
+   • MS = HKDF-extract(0, HS )                                      quantum attackers, provided quantum attackers do not exist
+When the PSK or the DH shared secret DHE is absent, it is           yet when the handshake is performed.
+replaced with 0. Other keys are derived from ES , HS , and
+                                                                       All the assumptions for this theorem are consequences
+MS by calls to Derive. A problem with this derivation is
+                                                                    of past cryptographic results, except for the PRF assump-
+that Derive and HKDF-extract rely on the same function
+                                                                    tion. Indeed, the key derivation contains a call of the form
+HMAC, so to be sure that there is no collision between HS =
+                                                                    HMAC(i, DHE ∥ss), which we see as being a PRF keyed by
+HKDF-extract(DHE , ES ) and other keys derived from ES
+                                                                    ss. This is unavoidable with the current design. We conjecture
+by Derive, we need the assumption that the arguments of
+                                                                    that this assumption could be fulfilled by adapting the proof
+HMAC in these calls do not collide, and similarly for keys
+                                                                    from [31] that HMAC is a dual-PRF to such a use-case.
+derived from HS . The final RFC removed this assumption by
+                                                                       In complement, we also proved that under the assumption
+updating the key derivation as:
+                                                                    that the PSK is secure, as implied by resp. Theorem 2 or 3,
+   • HS = HKDF-extract(DHE , Derive(ES , label 1 ))
+                                                                    and the PRF assumption for HMAC, the PSK handshake also
+   • MS = HKDF-extract(0, Derive(HS , label 2 ))
+                                                                    ensures resp. classical or post-quantum security.
+and using distinct labels for all calls to Derive.
+   The C RYPTOV ERIF proofs use separate lemmas to prove            C. Hybrid SSH
+properties about the key schedule. We just had to update these          The SSH key exchange protocol is built as a more classical
+lemmas to take into account this change, while the main proofs      signed DH than TLS, and is way simpler. Its up-to-date version
+of the TLS handshake remain unchanged.                              was previously verified with C RYPTOV ERIF in [8].
+     b) The Hybrid Proposal: The hybrid TLS 1.3 proposal                For the hybridization, it follows the high-level design
+from [5] aims at enabling a hybrid version with minimal             previously presented: the shared key is derived as KS =
+modifications, to ease deployment. It thus follows very closely     dPRF(DHE , ss) = h(DHE ∥ss) where h is a hash function
+our high-level design presentation, adding a KEM exchange to        (SHA-256 or SHA-512). We assume that dPRF satisfies the
+obtain an additional shared secret ss. Then, it proposes to inte-   PRF assumption considering ss as the key and the snPRF-
+grate it inside the key schedule by updating the HS derivation      ODH assumption jointly with the Diffie-Hellman group con-
+to HS = HKDF-extract(DHE ∥ss, Derive(ES , label 1 )).               sidering DHE as the key. Yet, SSH still posed a challenge,
+     c) Proofs: Taking those changes into account, we               due to its design following old guidelines that complicate the
+adapted the existing C RYPTOV ERIF models, that consisted of        proof.
+three main files capturing the possible execution modes of TLS            a) Hash Modeling: The core issue is that instead
+(with or without a PSK, that may itself be compromised) by:         of authenticating by using a signature of the form
+   • refactoring them so that the shared secret derivation can      sign((g a , g b , pk e , ct), sk B ), what SSH does is to use
+     be modified modularly;                                         sign(H, sk B ) where H = h(g a ∥g b ∥pk e ∥ct∥KS ) is a session
+   • adding a 204-line file that models the hybrid key ex-          id. Notice two important differences:
+     change of [5], producing DHE ∥ss as shared secret.                 • The transcript is hashed before being signed, so to make
+
+   With such an adaptation, we only had to slightly update                sure that the signature also authenticates the transcript,
+the previous classical proofs of secrecy and authentication in            we need the CR assumption on the hash function.
+order to (re)-obtain the classical security properties.                 • The shared key KS is included inside the hash. Since
+                                                                          EUF-CMA signatures may leak the signed message, we
+Theorem 2 (Classical TLS 1.3 security, simplified) Under                  need to make sure that h hides KS . We could achieve
+the snPRF-ODH assumption for the group and the HMAC                       that by assuming that f (x, KS ) = h(x∥KS ) is a PRF,
+function, the EUF-CMA assumption for signatures, the                      considering KS as the key.
+PRF assumption for HMAC, and the Collision Resistance               To be able to encode both assumptions, we cannot use the
+(CR) assumption for the hash function, the hybrid TLS               standard trick of adding a key to the collision-resistant hash
+1.3 handshake ensures authentication and forward secrecy.           function, to model the choice of the hash function itself. We
+(Authentication is bilateral when the client is authenticated;      need to use a notion of collision-resistance for hash functions
+only the server is authenticated otherwise.)                        without keys, as explained in [32]. Although we know that
+                                                                    collisions exist because the range of the hash is smaller than its
+  We however had to do from scratch the new proof for the           input domain, this notion models that we do not know how to
+security part obtained thanks to the additional KEM.                construct an attacker that finds a collision. We now intuitively
+                                                                    prove that if one effectively knows how to build an attacker
+Theorem 3 (Post-quantum TLS 1.3 security, simplified)               on the protocol with probability p, then one effectively knows
+Under the post-quantum IND-CCA2 assumption for the                  how to build an attacker on the assumptions with probability
+KEM, the post-quantum PRF assumption for HMAC, the                  p′ . And instead of assuming that no attacker can win CR, we
+post-quantum CR assumption for the hash function, and the           in fact assume that today, nobody knows how to effectively
+construct one. To make a valid proof in this setting, one has      of its original core. With a pen-and-paper proof, if there is an
+to make sure that the proofs are constructive, which is in fact    update, one has to carefully go through each and every step
+the case for C RYPTOV ERIF.                                        of the proof to verify that it still holds.
+   Finally, SSH computes the transport keys by                        With our case-studies, we have seen a valuable strength
+h(KS ∥H∥l∥H), where l is a letter among A, B, C, D,                of C RYPTOV ERIF: there is a form of proof stability w.r.t.
+E, F. To show that these keys are random, we also need that        protocol extensions. Indeed, all the proof guidance of the
+g(KS , x) = h(KS ∥x) is a PRF, for fixed-length x, with the        previous version mostly carried over to the hybridized version.
+same key KS as f above. Since the keys are the same, we            Intuitively, the proof steps that have to be specified manually
+would need a joint PRF assumption on f and g.                      mostly talk about the core security argument, and a correct
+   Instead of using that unusual assumption, we rely on the        extension should not change this core.
+same solution as [33]: we consider the specific computation              b) Hybridizing Existing Protocols: Our post-quantum
+PRFc performed in SSH using f and g and defined below,             C RYPTOV ERIF proofs advocate that if one follows carefully a
+and we assume that it is a PRF:                                    few guidelines, existing complex key exchanges can indeed be
+                                                                   made post-quantum secure with relatively small changes. For
+      PRFc(K, x) :
+                                                                   future developments, we outline here two important sufficient
+       H ← h(x∥K)                                                  conditions for provable security over the hybridization:
+       for l ∈ {A, B, C, D, E, F}, Kl ← h(K∥H∥l∥H)                   • including the KEM ephemerals inside the authenticated
+       return(H∥KA ∥KB ∥KC ∥KD ∥KE ∥KF )                               data helps to carry out a straightforward proof;
+                                                                     • ensuring that the DH and KEM secrets are correctly
+As mentioned in [33], one can prove that PRFc is a PRF from
+                                                                       combined, typically following generic KEM combiners; if
+the ROM assumption on h. They, and we, leave for future work
+                                                                       they are concatenated, the respective lengths of the secrets
+the proof of that property in the standard model.
+                                                                       must be fixed to enable the proof.
+      b) Proofs: We adapted the existing models by first re-
+moving the ROM and assuming that h is CR and PRFc is a             Those two implicit guidelines were followed for the SSH and
+PRF, and then making the hybridization with the KEM. The           TLS drafts, which greatly eased our proofs.
+first change forced us here to fully redo the existing classical        c) Symmetric primitives: Even though we make the same
+proofs, previously made in the ROM, in order to obtain the         assumptions on symmetric primitives in the classical and post-
+classical security.                                                quantum settings, we still need to check if these assumptions
+                                                                   can hold against quantum attackers, and with which level of
+Theorem 4 (Classical SSH security, simplified) Under the           security. According to NIST [34, last question], this may be
+snPRF-ODH assumption for the group and dPRF, the CR                valid keeping the same primitives and key lengths, at least for
+assumption for h, the PRF assumption for PRFc, and the             AES.
+EUF-CMA assumption for signatures, the hybrid SSH key ex-
+change ensures unilateral authentication and forward secrecy.                            V. C ONCLUSION
+
+The snPRF-ODH assumption is needed for proving forward                We have updated C RYPTOV ERIF, making it closer to clas-
+secrecy of SSH, in order to simulate reveal queries for            sical cryptographic proofs, as well as establishing its post-
+client keys in case the server is corrupted. The nnPRF-ODH         quantum soundness.
+assumption would be sufficient without forward secrecy; this          We demonstrate the importance of our approach on two
+is coherent with the remark of [33] that DDH is sufficient,        IETF drafts under discussion, formally obtaining the first
+since [33] does not prove forward secrecy.                         mechanized security proofs for those proposals, while we are
+   We also did from scratch the post-quantum proof.                also not aware of handwritten proofs.
+                                                                      C RYPTOV ERIF now appears well suited to take part in some
+Theorem 5 (Post-quantum SSH security, simplified)                  more design and standardization processes of hybrid protocols,
+Under the post-quantum IND-CCA2 assumption for the KEM,            as well as fully post-quantum ones. Our main limitation is
+the post-quantum PRF assumption for dPRF and PRFc, the             that we do not cover the qROM. On the protocol side, it is
+CR assumption for h, the classical EUF-CMA assumption              not needed for most key-exchanges, our main current target.
+for signatures, the hybrid SSH key exchange ensures forward        This would however be a true limitation in order to prove the
+secrecy even against quantum attackers, provided quantum           security of some primitives, as well as specific protocols like
+attackers do not exist yet when the handshake is performed.        e-voting.
+                                                                         Acknowledgments: This work was partly done while
+D. Lessons Learned                                                 Charlie Jacomme was at Inria, Paris, France. This work bene-
+     a) Adaptability of C RYPTOV ERIF Proofs: Whenever a           fited from funding managed by the French National Research
+protocol is updated in any way, it is crucial to prove again       Agency under the France 2030 programme with the references
+the security of the protocol. Notably, it is common that even      ANR-22-PECY-0006 (PEPR Cybersecurity SVP) and ANR-
+just an extension of a protocol may downgrade the security         22-PETQ-0008 (PEPR Quantic PQ-TLS).
+                              R EFERENCES                                         [18] C. Cremers, C. Fontaine, and C. Jacomme, “A logic and an interactive
+                                                                                       prover for the computational post-quantum security of protocols,” in
+ [1] C. Boyd, Y. Cliff, J. M. G. Nieto, and K. G. Paterson, “One-round                 2022 IEEE Symposium on Security and Privacy (S&P’22). IEEE, 2022,
+     key exchange in the standard model,” International Journal of Applied             pp. 125–141.
+     Cryptography, vol. 1, no. 3, p. 181, 2009. [Online]. Available:              [19] G. Bana and H. Comon-Lundh, “A computationally complete symbolic
+     http://www.inderscience.com/link.php?id=23466                                     attacker for equivalence properties,” in Proceedings of the 2014 ACM
+ [2] A. Fujioka, K. Suzuki, K. Xagawa, and K. Yoneyama, “Strongly secure               SIGSAC Conference on Computer and Communications Security, 2014,
+     authenticated key exchange from factoring, codes, and lattices,” in Public        pp. 609–620.
+     Key Cryptography – PKC 2012, ser. Lecture Notes in Computer Science,         [20] B. Blanchet and D. Pointcheval, “Automated security proofs with
+     vol. 7293.      Springer, May 2012, pp. 467—-484, extended version                sequences of games,” in Advances in Cryptology – CRYPTO 2006, ser.
+     available at https://eprint.iacr.org/2012/211.                                    Lecture Notes in Computer Science, C. Dwork, Ed., vol. 4117. Springer,
+ [3] P. Schwabe, D. Stebila, and T. Wiggers, “Post-quantum TLS without                 Aug. 2006, pp. 537–554.
+     handshake signatures,” in Proceedings of the 2020 ACM SIGSAC Con-            [21] B. Blanchet and C. Jacomme, “CryptoVerif: a computationally-sound
+     ference on Computer and Communications Security, 2020, pp. 1461–                  security protocol verifier,” Inria, Research report RR-9526, Oct. 2023,
+     1480.                                                                             available at https://inria.hal.science/hal-04253820.
+ [4] E. Kret and R. Schmidt, “The PQXDH key agreement protocol.”                  [22] V. Shoup, “Sequences of games: a tool for taming complexity in
+     [Online]. Available: https://signal.org/docs/specifications/pqxdh/                security proofs,” Cryptology ePrint Archive, Report 2004/332, Nov.
+ [5] D. Stebila, S. Fluhrer, and S. Gueron, “Hybrid key exchange in                    2004, available at http://eprint.iacr.org/2004/332.
+     TLS 1.3,” Internet Engineering Task Force, Internet-Draft draft-ietf-        [23] F. Giacon, F. Heuer, and B. Poettering, “KEM combiners,” in Public-
+     tls-hybrid-design-09, Sep. 2023, work in Progress. [Online]. Available:           Key Cryptography–PKC 2018: 21st IACR International Conference on
+     https://datatracker.ietf.org/doc/draft-ietf-tls-hybrid-design/09/                 Practice and Theory of Public-Key Cryptography, Rio de Janeiro, Brazil,
+ [6] P. Kampanakis, D. Stebila, and T. Hansen, “Post-quantum                           March 25-29, 2018, Proceedings, Part I 21, ser. Lecture Notes in
+     Hybrid Key Exchange in SSH,” Internet Engineering Task                            Computer Science, vol. 10769. Springer, 2018, pp. 190–218.
+     Force, Internet-Draft draft-kampanakis-curdle-ssh-pq-ke-01, Apr. 2023,       [24] N. Bindel, J. Brendel, M. Fischlin, B. Goncalves, and D. Stebila, “Hybrid
+     work in Progress. [Online]. Available: https://datatracker.ietf.org/doc/          key encapsulation mechanisms and authenticated key exchange,” in Post-
+     draft-kampanakis-curdle-ssh-pq-ke/01/                                             Quantum Cryptography, ser. Lecture Notes in Computer Science, J. Ding
+ [7] K. Bhargavan, B. Blanchet, and N. Kobeissi, “Verified models and                  and R. Steinwandt, Eds., vol. 11505. Springer, 2019, pp. 206–226.
+     reference implementations for the TLS 1.3 standard candidate,” in IEEE       [25] J. Brendel, M. Fischlin, F. Günther, and C. Janson, “PRF-ODH: Rela-
+     Symposium on Security and Privacy (S&P’17). IEEE, May 2017, pp.                   tions, instantiations, and impossibility results,” in CRYPTO 2017, ser.
+     483–503.                                                                          Lecture Notes in Computer Science, vol. 10403. Springer, Aug. 2017,
+ [8] D. Cadé and B. Blanchet, “From computationally-proved protocol                   pp. 651–681.
+     specifications to implementations and application to SSH,” Journal           [26] B. Blanchet, “Composition theorems for CryptoVerif and application
+     of Wireless Mobile Networks, Ubiquitous Computing, and Dependable                 to TLS 1.3,” in 31st IEEE Computer Security Foundations Symposium
+     Applications (JoWUA), vol. 4, no. 1, pp. 4–31, Mar. 2013.                         (CSF’18). IEEE, Jul. 2018, pp. 16–30.
+ [9] W. K. Wootters and W. H. Zurek, “A single quantum cannot be                  [27] ——, “Dealing with dynamic key compromise in CryptoVerif,” in 37th
+     cloned,” Nature, vol. 299, no. 5886, pp. 802–803, Oct. 1982. [Online].            IEEE Computer Security Foundations Symposium (CSF’24). IEEE, Jul.
+     Available: http://www.nature.com/articles/299802a0                                2024, preprint available at https://inria.hal.science/hal-04271666.
+[10] J. Watrous, “Zero-knowledge against quantum attacks,” SIAM Journal           [28] E. Rescorla, “The Transport Layer Security (TLS) protocol version 1.3,”
+     on Computing, vol. 39, no. 1, pp. 25–58, 2009.                                    RFC 8446, https://www.rfc-editor.org/rfc/rfc8446, Aug. 2018.
+[11] A. Ambainis, A. Rosmanis, and D. Unruh, “Quantum attacks on classical        [29] ——, “The Transport Layer Security (TLS) protocol version 1.3, draft-
+     proof systems: the hardness of quantum rewinding,” in 2014 IEEE 55th              ietf-tls-tls13-18,” https://tools.ietf.org/html/draft-ietf-tls-tls13-18, Oct.
+     Annual Symposium on Foundations of Computer Science. IEEE, 2014,                  2016.
+     pp. 474–483.                                                                 [30] H. Krawczyk, “Cryptographic extraction and key derivation: The HKDF
+[12] F. Song, “A Note on Quantum Security for Post-Quantum                             scheme,” in Advances in Cryptology (CRYPTO), ser. Lecture Notes in
+     Cryptography,” arXiv:1409.2187 [quant-ph], Sep. 2014, arXiv:                      Computer Science, vol. 6223. Springer, 2010, pp. 631–648.
+     1409.2187. [Online]. Available: http://arxiv.org/abs/1409.2187               [31] M. Backendal, M. Bellare, F. Günther, and M. Scarlata, “When messages
+[13] T. Gagliardoni, “Quantum Security of Cryptographic Primitives,”                   are keys: Is HMAC a dual-PRF?” in Advances in Cryptology – CRYPTO
+     arXiv:1705.02417 [quant-ph], May 2017, arXiv: 1705.02417.                         2023, ser. Lecture Notes in Computer Science, vol. 14083. Springer,
+[14] D. O’Brien, “Protecting Chrome traffic with hybrid Kyber KEM,” https:             2023, pp. 661–693.
+     //blog.chromium.org/2023/08/protecting-chrome-traffic-with-hybrid.           [32] P. Rogaway, “Formalizing human ignorance: Collision-resistant hashing
+     html, Aug. 2023.                                                                  without the keys,” in International Conference on Cryptology in Vietnam,
+[15] G. Barthe, B. Grégoire, S. Heraud, and S. Z. Béguelin, “Computer-               ser. Lecture Notes in Computer Science, vol. 4341. Springer, 2006, pp.
+     aided security proofs for the working cryptographer,” in Advances in              211–228.
+     Cryptology – CRYPTO 2011, ser. Lecture Notes in Computer Science,            [33] F. Bergsma, B. Dowling, F. Kohlar, J. Schwenk, and D. Stebila, “Multi-
+     P. Rogaway, Ed., vol. 6841. Springer, Aug. 2011, pp. 71–90.                       ciphersuite security of the secure shell (SSH) protocol,” in Proceedings
+[16] M. Barbosa, G. Barthe, X. Fan, B. Grégoire, S.-H. Hung, J. Katz, P.-             of the 2014 ACM SIGSAC Conference on Computer and Communica-
+     Y. Strub, X. Wu, and L. Zhou, “EasyPQC: Verifying post-quantum                    tions Security, 2014, pp. 369–381.
+     cryptography,” in Proceedings of the 2021 ACM SIGSAC Conference              [34] NIST, “Post-quantum cryptography, faqs.” [Online]. Available: https:
+     on Computer and Communications Security, 2021, pp. 2564–2586.                     //csrc.nist.gov/projects/post-quantum-cryptography/faqs
+[17] D. Baelde, S. Delaune, A. Koutsos, C. Jacomme, and S. Moreau, “An
+     interactive prover for protocol verification in the computational model,”
+     in 42nd IEEE Symposium on Security and Privacy (S&P’21),. IEEE,
+     May 2021, pp. 537–554.
+

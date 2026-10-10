@@ -1,0 +1,1246 @@
+Formal verification of the PQXDH Post-Quantum
+    key agreement protocol for end-to-end
+               secure messaging
+Karthikeyan Bhargavan, Cryspen; Charlie Jacomme, Inria Nancy Grand-Est,
+     Université de Lorraine, LORIA, France; Franziskus Kiefer, Cryspen;
+                     Rolfe Schmidt, Signal Messenger
+   https://www.usenix.org/conference/usenixsecurity24/presentation/bhargavan
+
+
+
+
+     This paper is included in the Proceedings of the
+            33rd USENIX Security Symposium.
+               August 14–16, 2024 • Philadelphia, PA, USA
+                              978-1-939133-44-1
+
+
+
+
+                                      Open access to the Proceedings of the
+                                        33rd USENIX Security Symposium
+                                            is sponsored by USENIX.
+    Formal verification of the PQXDH Post-Quantum key agreement protocol for
+                             end-to-end secure messaging
+
+             Karthikeyan Bhargavan1 , Charlie Jacomme2 , Franziskus Kiefer1 , and Rolfe Schmidt3
+                                                              1 Cryspen
+                          2 Inria Nancy Grand-Est, Université de Lorraine, LORIA, France
+                                                        3 Signal Messenger
+
+
+
+                          Abstract                                      The Signal messenger uses two protocols: X3DH [32]
+The Signal Messenger recently introduced a new asyn-                 and Double Ratchet [33] (DR) to provide mutual authentica-
+chronous key agreement protocol called PQXDH (Post-                  tion, forward secrecy, post-compromise security, and a form
+Quantum Extended Diffie-Hellman) that seeks to provide               of deniability. These protocols are widely considered as the
+post-quantum forward secrecy, in addition to the authentica-         benchmark for end-to-end encrypted messaging and are also
+tion and confidentiality guarantees already provided by the          used in other messengers like WhatsApp, Facebook Messen-
+previous X3DH (Extended Diffie-Hellman) protocol. More               ger, and Skype. Both X3DH and DR rely heavily on the
+precisely, PQXDH seeks to protect the confidentiality of mes-        Diffie-Hellman (DH) construction, instantiated in the imple-
+sages against harvest-now-decrypt-later attacks.                     mentation using the Curve25519 elliptic curve [31]. However,
+   In this work, we formally specify the PQXDH protocol              this construction can be broken by a quantum computer that
+and analyze its security using two formal verification tools,        uses Shor’s algorithm [36] to compute discrete logarithms.
+P ROVERIF and C RYPTOV ERIF. In particular, we ask whether           Consequently, any message sent using Signal today could be
+PQXDH preserves the guarantees of X3DH, whether it pro-              eventually decrypted using a quantum computer, significantly
+vides post-quantum forward secrecy, and whether it can be se-        reducing the expected forward secrecy threshold.
+curely deployed alongside X3DH. Our analysis identifies sev-            To mitigate this risk, Signal proposed a new protocol, called
+eral flaws and potential vulnerabilities in the PQXDH specifi-       PQXDH (Post-Quantum Extended Diffie-Hellman) as a first
+cation, although these vulnerabilities are not exploitable in the    step in the post-quantum transition of the Signal messenger.
+Signal application, thanks to specific implementation choices        The protocol uses a post-quantum key encapsulation mech-
+which we describe in this paper. To prove the security of the        anism (PQ-KEM) to fortify X3DH against future quantum
+current implementation, our analysis notably highlighted the         adversaries. In the Signal implementation, the PQ-KEM is
+need for an additional binding property of the KEM, which            instantiated using Kyber [17], which is currently undergoing
+we formally define and prove for Kyber.                              standardization as ML-KEM [2]. The goal of the protocol is to
+   We collaborated with the protocol designers to develop an         preserve the existing security of X3DH while also providing
+updated protocol specification based on our findings, where          forward secrecy against harvest-now-decrypt-later (HNDL)
+each change was formally verified and validated with a se-           adversaries who collect encrypted messages sent today with a
+curity proof. This work identifies some pitfalls that the com-       view to decrypting them later using a quantum computer.
+munity should be aware of when upgrading protocols to be                PQXDH is already deployed, alongside X3DH, in the
+post-quantum secure. It also demonstrates the utility of using       Signal messenger and is used by tens of millions of users. It
+formal verification hand-in-hand with protocol design.               is one of the first post-quantum secure channel protocols to
+                                                                     be deployed at this scale and serves as an early case study of
+1   Introduction                                                     how to integrate post-quantum crypto in real-world systems.
+                                                                        In this paper, we formally specify and analyze the security
+The impending advent of large-scale quantum computers                of the PQXDH protocol against both classical and quantum
+poses an existential threat to the security of modern cryp-          adversaries. The security properties we consider are mutual
+tography. As quantum algorithms can efficiently break all            authentication and forward secrecy, but we do not analyze
+widely used asymmetric cryptographic schemes, a paradigm             deniability. We use the automated symbolic protocol analysis
+shift towards post-quantum cryptography (PQC) is required            tool P ROVERIF [14] to find flaws and potential attacks in the
+to ensure the confidentiality, integrity, and authenticity of sen-   first version of PQXDH. We suggest fixes to the protocol
+sitive data and communications.                                      and then develop a security proof for the updated protocol
+
+
+
+USENIX Association                                                                       33rd USENIX Security Symposium         469
+using the C RYPTOV ERIF prover [15]. In collaboration with        Key Generation Each agent generates multiple key pairs:
+Signal developers and designers, we helped incorporate these         • A long term identity key IK.
+changes into the now published second version of PQXDH.              • A medium term key, called a “Signed PreKey”, SPK.
+                                                                       This key will be signed when used in the protocol and
+Contributions. We provide the first formal security analysis           will be regularly rotated, e.g. every two days.
+of the PQXDH [29] protocol deployed in Signal, uncovering            • A short term “One Time Prekey”, OPK, that is deleted
+a public key confusion attack, a KEM re-encapsulation attack,          after each use, and short term ephemeral keys, EK, used
+and two additional weaknesses in the protocol. We propose              within each session.
+fixes for these attacks, resulting in a second version of the        For each key pair K, we use Ksk to refer to the private key
+PQXDH specification [30], and we present formal security          and Kpk for the public key. For the agents Alex and Blake, let
+theorems for this updated version.                                IKA and IKB respectively denote their long term identity key
+   As a side contribution, our re-encapsulation attack also       pairs; Similarly, for all other keys, the subscript A denotes
+brings additional light to the current discussion over the cor-   a key controlled by Alex and the subscript B denotes a key
+rect security definitions for KEMs [6, 22].To prove that the      controlled by Blake. We assume a public-key infrastructure
+instantiation of PQXDH in the current Signal implementation       (PKI) so that all identity keys are known by all parties.1
+is secure, we needed an extra security property for KEMs,
+which we prove is met by Kyber, and under which PQXDH             Initiation To initiate the protocol, Blake prepares a Pre-key
+is secure. This definition is of independent interest.            bundle message containing SPKpk               pk   sk
+                                                                                                  B , sign(SPKB , IKB ) and op-
+                                                                                                        pk
+   To the best of our knowledge, this paper provides the          tionally some One-Time Prekey OPKB .
+first machine-checked security analysis for a real-world post-
+quantum cryptographic protocol. Our work identifies pitfalls      Session Secret Generation After receiving those pre-keys,
+in transitioning cryptographic protocols to post-quantum se-      Alex verifies the signatures, generates their own ephemeral
+cure versions, and demonstrates how they can be avoided by        DH key pair EKA , and computes some DH shared secrets:
+the use of formal analysis tools during protocol design, and                             IKsk                    EKsk
+                                                                         DH1 = (SPKpk B )
+                                                                                           A       DH2 = (IKpkB )
+                                                                                                                    A
+by deeper collaborations between verification researchers in                          pk EK sk                   pk EKsk
+                                                                         DH3 = (SPKB ) A           DH4 = (OPKB ) A
+academia and cryptographic developers in industry.
+                                                                  DH4 is optional, and only computed if OPKpk  B was provided.
+                                                                  Intuitively, DH1 will authenticate Alex to Blake, and the rest
+Models and reproducibility. Our formal models are avail-          are for increasing levels of confidentiality towards Blake.
+able online at [12]. Standard versions of the C RYPTOV ERIF       These three or four DH values are then concatenated and
+and P ROVERIF tools are sufficient and not provided at [12].      used inside a Key Derivation Function (KDF) to obtain a
+                                                                  session key SKA , used to encrypt a first message with an Au-
+2     PQXDH: Post-Quantum Extended Diffie-                        thenticated Encryption with Additional Data (AEAD), where
+      Hellman Key Agreement Protocol                              the associated data includes an encoding of IKpk       pk
+                                                                                                                   A , IKB . Alex
+                                                                  then sends their ephemeral DH public key EKpk   A , along with
+The classic Signal Protocol is the composition of the X3DH        the AEAD ciphertext, back to Blake.
+handshake protocol [32] with the Double Ratchet proto-
+col [33] for continuous key agreement. In 2023, the X3DH          Completing the Handshake Upon receiving Alex’s mes-
+protocol was replaced by PQXDH [29], which we detail in           sage, Blake performs the symmetric DH computations, mu-
+this section, along with the security properties expected from    tatis mutandis, and passes the concatenated values to the KDF
+the protocol. Our description is based on the standalone spec-    to obtain the final secret, SKB . Blake then uses this to de-
+ifications for X3DH and PQXDH.                                    crypt the AEAD ciphertext. This decryption is successful if
+                                                                  SKA = SKB , and the protocol session is complete.
+2.1    X3DH: Extended Triple Diffie-Hellman
+                                                                  2.2     PQXDH Design Rationale
+We begin with a brief description of the legacy X3DH proto-
+col before detailing the changes made by PQXDH.                   The X3DH protocol becomes entirely insecure in the pres-
+   The Signal Protocol is designed for asynchronous commu-        ence of an adversary with a quantum computer or an improved
+nication between agents who upload their public keys to a         classical algorithm capable of computing discrete logarithms
+key distribution server. For simplicity, we present X3DH as       in the underlying group. Because of this, the engineers at Sig-
+a synchronous key exchange between two agents Alex and            nal Messenger designed an update to X3DH, called PQXDH,
+Blake, where Blake may be refered to as the initiator of the      with the following design goals:
+exchange, even though in practice, it is the key distribution        1 In practice, this assumption is met if we either trust the server to distribute
+
+server that prepares the initial protocol message.                correct identity keys, or if agents check key fingerprints out-of-band.
+
+
+
+
+470    33rd USENIX Security Symposium                                                                                    USENIX Association
+                                             pk                                                                                      pk
+                                 IKsk
+                                   B , IKA                                                                                       IKB , IKsk
+                                                                                                                                         A
+                                     B LAKE                                                                                          A LEX
+
+
+                               pk $
+               SPKsk       − DH.Keygen
+                  B , SPKB ←
+                                          pk $
+               PQSPKsk         − KEM.Keygen
+                    B , PQSPKB ←
+                                                                    sign(SPKpk    sk             pk    sk
+                                                                            B , IKB ), sign(PQSPKB , IKB )
+
+
+                                                                                                       Verify signatures
+                                                                                                               pk $
+                                                                                                       EKsk      − DH.Keygen
+                                                                                                         A , EKA ←
+                                                                                                               $                               pk
+                                                                                                              − KEM.encaps(PQSPKB )
+                                                                                                       CT, SS ←
+                                                                                                                           pk IKsk        pk EKsk             sk
+                                                                                                       SKB = kdf((SPKB ) A ∥(IKB )             A    ∥(SPKpk
+                                                                                                                                                         B )
+                                                                                                                                                            EKA
+                                                                                                                                                                ∥SS )
+                                                                                                                pk    pk
+                                                                                                       AD = IKA ∥IKB
+                                                                         pk
+                                                                      EKA , CT , enc(”hello”, 0, AD, SKB )
+
+        SS = KEM.decaps(CT, PQSPKsk
+                                 B)
+                     pk         sk         pk     sk   pk      sk
+        SKA = kdf((IKA )SPKB ∥(EKA )IKB ∥(EKA )SPKB ∥SS )
+                          pk         pk
+        Check ifAD = IKA ∥IKB
+        Decrypt and check aead
+
+
+
+
+                                                            Figure 1: The PQXDH protocol (simplified).
+          It behaves like the X3DH protocol, with additional (PQ-)KEM computations, highlighted with a light gray background.
+
+
+  1. Passive quantum adversary. The protocol must provide                                  on entirely different cryptographic assumptions and lose all
+      security against passive attackers capable of computing                              DH-based security guarantees, so these protocols do not meet
+      discrete logarithms in the underlying group. In particular,                          the requirements without some modification.
+      it must prevent HNDL attacks.
+  2. No security loss. The protocol must not remove any
+      security guarantees. In particular, the protocol must pro-
+      vide the same DH-based confidentiality and authenti-                                 Hybrid Protocols One way to reclaim the DH-based secu-
+      cation guarantees as X3DH so that even if attacks are                                rity would be to design a hybrid protocol that mixes DH oper-
+      found on post-quantum primitives in the protocol, Signal                             ations into a fully post-quantum handshake protocol. While
+      users are no less secure.                                                            this is an interesting area of research, the costs of the post-
+  3. Efficient. When the above security requirements are met,                              quantum handshake protocols are significant. Since security
+      a more efficient protocol for Signal Messenger’s usage                               against active quantum adversaries is not a requirement, any
+      patterns is preferred. This is a soft design goal, since                             protocol that gives this up in exchange for more lightweight
+      when performance is reasonable, Signal will trade some                               communication and computation will be preferred.
+      efficiency for a security level that exceeds the design
+      goals.
+We emphasize that protection against active quantum adver-
+saries is not a goal for PQXDH, although Signal engineers                                  Post-quantum Primitive Selection As seen in Section 2.3,
+intend to provide this in a future protocol version. Also, since                           PQXDH uses a PQ-KEM to add post-quantum secure entropy
+the Signal Protocol and Signal Messenger’s implementation                                  into the classical protocol. While the specification does not
+of it have seen extensive scrutiny they add to these a fourth, in-                         require a particular PQ-KEM, Signal selected Kyber1024 [17]
+formal guideline: the new protocol should minimize changes                                 for deployment. The Kyber family of KEMs was selected be-
+to the existing X3DH protocol and its codebase.                                            cause its standards-track status has both put it under extensive
+                                                                                           scrutiny and leads them to expect high quality library support
+Fully Post-quantum Handshake Protocols There is a                                          in the future. In the Kyber family, the 1024-bit variant was
+growing body of research into fully post-quantum replace-                                  selected as the most conservative option. Since PQXDH is de-
+ments for X3DH [19, 20, 25], but these protocols do both                                   signed to provide security decades into the future, they judged
+more and less than what Signal Messenger requires. They                                    that a marginal additional cost in message size and client com-
+offer more by providing full post quantum security against                                 putation is a worthwhile hedge against future advances in
+active quantum adversaries. They offer less since they rely                                lattice algorithms.
+
+
+
+USENIX Association                                                                                                   33rd USENIX Security Symposium                     471
+2.3    Protocol outline                                                • Mutual Authentication: if a party completes the proto-
+                                                                         col with a given public key, it is indeed communicating
+Signal chose an approach that made minimal changes to the                with the owner of this public key.
+X3DH protocol and to their existing codebase. At a high level,         • Forward secrecy: keys computed between honest partic-
+PQXDH can be seen as injecting a post-quantum secure                     ipants are secret, unless the long term secrets of a party
+shared key into the classical X3DH protocol using a PQ-                  were compromised before the exchange took place.
+KEM. In Fig. 1 we present a simplified execution of PQXDH,             • Resistance to key compromise impersonation: even
+where we highlight the additions to X3DH. The changes are                if the long term keys of an agent are leaked, sessions
+as follows:                                                              initiated by this agent are still secure.
+  1. Agents also generate a KEM key pair, PQSPK.                       • Session independence: the compromise of the short-
+  2. In the initial message to Alex, Blake includes PQSPKpkB             term material of a session does not affect the security
+     and sign(PQSPKpk   B , IKsk
+                              B  ).                                      of other sessions and the compromise of medium-term
+  3. When computing the session secret, Alex also computes               material does not affect the security of sessions using
+              $                          pk
+     CT, SS ←− KEM.encaps(PQSPKB ) and concatenates                      different medium-term keys.
+     SS to the X3DH Key Derivation Function input.                     • HNDL protection: if an attacker suddenly has access
+  4. Alex includes the KEM ciphertext, CT, in its message.               to a quantum computer, all previously completed key
+  5. Blake uses their private key to compute SS =                        exchange are still secure.
+     KEM.decaps(CT, PQSPKsk   B ) and also concatenates it             Note that we in fact consider a slightly stronger notion of
+      to the X3DH Key Derivation Function input.                    HNDL protection than the one discussed in the “passive quan-
+                                                                    tum adversaries” consideration of [29, Section 4.7]. Indeed,
+Simplifications For clarity we made several simplifications         rather than a fully passive quantum attacker, we consider the
+to our description of PQXDH. We provide a full version in           security against an active attacker that at some point gets ac-
+Appendix with Fig. 4. In particular, Fig. 1 omits:                  cess to a quantum computer, and can then try to break the
+   • the asynchronous behaviour of the protocol and its un-         security of previously completed key-exchanges.
+      trusted key distribution server;                                 The PQXDH security considerations explicitly give some
+   • the encoding functions for public keys;                        compromise cases leading to insecurity, while stating incom-
+   • the key identifiers sent in Alex’s final message of the        pleteness. In our work, we will strive to capture precisely
+      asynchronous protocol;                                        under which conditions the security holds.
+   • the DH4 computation based on the optional OPK;
+   • the distinction between short-term (or “one time”) KEM         2.5    Threat Model and Crypto Assumptions
+      keys PQOPK and medium-term (or “last resort”) KEM
+      keys PQSPK.                                                    We consider an active attacker that can intercept and modify
+However, our formal models of PQXDH include all of the               all messages sent over the network. The security of PQXDH
+above except the last, and we discuss their security impact.         is expected to hold under a set of standard cryptographic
+For one-time KEM keys, we note that in the PQXDH specifi-            assumptions about the algorithms used in the protocol:
+cation, Alex has no way to distinguish between a short-term         1.A) Either gapDH is intractable for the elliptic curve X25519,
+or medium-term KEM key, and an untrusted server can al-                   which typically implies that any of the DHx value com-
+ways choose to send medium-term keys and hold back the                    puted in X3DH cannot be computed if the attacker as
+short-term ones. Thus, in our models and analysis we assume               only seen the corresponding public shares;
+that all KEM keys are medium term.                                  1.B) Or the PQ-KEM (Kyber1024) is IND-CCA [16], which
+                                                                          means that only Alex and Blake can derive the shared
+2.4    Desired Security Properties                                        secret computed by the KEM;
+                                                                       2) And the signature Sig (XEdDSA), is EUF-CMA [18],
+The specification does not formally define which security                 which means that signatures are unforgeable, and ensures
+guarantees are meant to be provided by the protocol. However,             the authentication of the pre-key bundle, which in turn
+it provides a high-level discussion on security considerations,           ensures that Blake knows that only Alex will be able to
+including authentication, secrecy, identity binding, deniability,         compute the same SK;
+and post-quantum resistance.                                           3) And the final AEAD (AES256 in CBC mode with
+   We of course would like to prove resistance to harvest-now-            HMAC and Encrypt-Then-Mac) is IND-CPA (plaintexts
+decrypt-later (HNDL) adversaries, as it is the main design goal           are secrets) and IND-CTXT (ciphertexts are integrity
+of PQXDH. However, since we expect that PQXDH must                        protected) [35], which is of course needed to ensure the
+attain the same level of security as X3DH against classical               secrecy of the first sent message, and is also used to
+adversaries, we also consider traditional authenticated key               authenticate Alex and Blake together;
+exchange security properties in our analysis:                          4) And the KDF function (HKDF) is a Random Oracle;
+
+
+
+472    33rd USENIX Security Symposium                                                                        USENIX Association
+                                                                      For PQXDH, we model two roles (Alex and Blake) and
+                                                                   specify how they process and construct the two messages in
+                                                                   the protocol using a library of cryptographic constructions.
+                                                                   Once the protocol messages are modeled, we define the over-
+                                                                   all scenario including the public key infrastructure, and the
+                                                                   servers that hold the pre-keys. For PQXDH, we model:
+                                                                      • an arbitrary number of agents communicating together;
+                                                                      • a trusted PKI that provides the identity keys of clients to
+                                                                         each other (modeled as a public database with tables);
+                                                                      • each device uploads Curve and KEM keys to a server
+                                                                         which is fully untrusted (modeled as a public channel);
+                                                                      • each connection consists of one encrypted message from
+                                                                         the Alex to Blake (with no follow-up messages);
+                                                                      • each connection can optionally use an OPK;
+          Figure 2: Protocol Verification Workflow                    • we consider that all KEM keys are medium-term keys.
+
+
+                                                                   3.2    Threat Model
+     which ensures that if any part of the input is secret, the
+     final key is a strong secret that is indistinguishable from   We add processes to the model that allow for certain keys
+     a fresh random bitstring.                                     to be compromised. In our model, identity keys IK may be
+   We also consider that the attacker may compromise some          compromised (dynamically, adaptively) at any time, allowing
+short, medium and long term keys, depending on the scenario        the adversary to then maliciously sign other keys like SPK and
+and security property under consideration.                         PQSPK and upload them to servers. For certain security goals,
+   Assumptions 1.A) and 2) must hold against classical at-         we also consider the compromise of short- and medium-term
+tackers, while 1.B), 3) and 4) are also for quantum attack-        secrets such as OPK, EK, PQSPK, and SPK.
+ers. Hence, the intuition behind the hybrid design is that            We also model the quantum adversary, which is done by:
+1.A+2+3+4 implies classical security today, and 1.B+2+3+4             • explicitly giving the attacker the power to break the non
+implies long term security against future quantum attackers.            post-quantum secure primitives (i.e., allow it to compute
+   We choose the gapDH and ROM assumptions above fol-                   discrete logarithms and signatures);
+lowing prior formal analyzes of X3DH [21]. However, in the            • or equivalently, leaking the secrets used by non post-
+quantum setting, we will not rely on the ROM, but rather on             quantum secure primitives;
+the simpler Pseudo Random Function (PRF) assumption.                  • or even stronger, not making any cryptographic assump-
+                                                                        tion about the elliptic curve or signature at all.
+                                                                      Essentially, we mark the timestamp for each compromise
+3     Formal Verification Methodology                              or quantum attack, and then consider the security for key
+                                                                   exchanges completed before this point in time.
+To formally analyze whether PQXDH meets its security                  Note that depending on the tool and the complexity of the
+goals, we employ a multi-faceted approach using both a sym-        analysis, adding more compromise scenarios may make the
+bolic protocol analysis tool and a computational proof frame-      analysis infeasible. For example, in C RYPTOV ERIF, we only
+work. Our workflow is depicted in Figure 2. We describe each       consider the dynamic compromise of the long term identity
+step of this workflow in sequence.                                 keys. In P ROVERIF, thanks to its high level of automation,
+                                                                   we are able to consider the dynamic compromise of any cryp-
+                                                                   tographic material of any agent.
+3.1    Modeling the Protocol
+We begin by taking the English-language protocol specifica-        3.3    Security Goals
+tion document [29] and formalizing it in a protocol description
+language. Different verification tools accept different input      To state the security goals of the protocol we annotate the
+languages. For example, the P ROVERIF and C RYPTOV ERIF            protocol model with events that indicate the current protocol
+tools accepts protocols specified in the applied pi calculus,      status of each participant. Events do not affect the concrete
+where each role of the protocol is specified as a process that     execution of the trace and are only used to reason about it.
+communicates with other protocol participants and the ad-          For instance the process for Blake triggers the event:
+versary over public channels. C RYPTOV ERIF also accepts                      event(BlakeDone(A,B,spk,pqpk,sk))
+protocols specified using an oracle syntax that is more similar    to indicate that an agent B (playing the role of Blake) has
+to pen-and-paper cryptographic proofs.                             completed a PQXDH session with A (playing Alex), where it
+
+
+
+USENIX Association                                                                     33rd USENIX Security Symposium         473
+used the keys corresponding to the public keys spk (SPKpk B )     3.4    Symbolic Verification using P ROVERIF
+and pqspk (PQSPKpk B ) to compute the session key sk ( SKB ).
+                                                                  P ROVERIF is a fully automated tool in the symbolic model,
+                                                                  where after specifying a protocol and some security proper-
+Mutual Authentication For authentication, we state that           ties, it either gives back an attack or a security claim. The
+whenever Alex completes the protocol, Blake must also have        attacker model is weaker than the computational model, as
+completed the protocol with matching parameters, which is         the cryptography is assumed to be perfect. P ROVERIF does
+expressed in P ROVERIF (simplified) as:                           attack finding, and also allows the analyst to quickly explore
+                                                                  a set of possible scenarios or protocol variants, as well as
+query A,B,spk,pqpk,sk,i,j;                                        scale better to bigger protocols, or more complex compromise
+  event(BlakeDone(A,B,spk,pqpk,sk))@i                             scenarios.
+    =⇒ event(AlexDone(A,B,spk,pqpk,sk))@j & j<i
+                                                                  Symbolic Cryptographic Model In the symbolic setting
+This read as, for all values of the given variables, whenever     for P ROVERIF, cryptographic primitives are assumed to be
+the event BlakeDone was raised with the corresponding values      perfect by default. However, we can explicitly give additional
+at some point in time i, then another agent concluded with        capabilities to the attacker. To model the arrival of a suffi-
+the event AlexDone with the same parameters and at some           ciently powerful quantum computer or major advances in
+time point j before i. Note that in a query of this form,         classical algorithms, we include in our models the fact that an
+the variables occurring before the implication are universally    attacker may at some point be able to compute discrete loga-
+quantified, and the other ones are existentially quantified. We   rithms. Likewise, to model that advances in cryptanalysis may
+state a similar authentication goal in the reverse direction to   render a KEM insecure, we include in our models the fact that
+get mutual authentication.                                        an attacker may at some point be able to decapsulate KEM
+                                                                  ciphertexts without access to the secret key. In P ROVERIF,
+                                                                  we will thus have a single monolithic attacker model, that
+Confidentiality We can state a range of confidentiality prop-     may at some point have access to quantum computers, or
+erties for PQXDH. The weakest property is that the attacker       may at some point be able to compromise the KEM. We will
+should not be able to compute the session key. Since we           then prove security properties stating the security unless some
+allow the compromise of long term keys, this query would          bad case happens, either a compromise of some keys, or the
+be trivially false on our models. We then typically write a       compromise of one of the primitive.
+stronger query corresponding to forward secrecy, covering
+the fact that the session key is secret unless we compromised     Finding Attacks with P ROVERIF Consider the post-
+the long-term key before the session was completed. Then,         quantum forward secrecy confidentiality query we stated
+also taking into account the fact that the attacker may at some   above. If we drop the second and third cases in the disjunction,
+point have access to a quantum computer, the post-quantum         it just models a basic form of confidentiality.
+forward secrecy query is written in P ROVERIF as:                     In our models, this property is of course false: typically, the
+                                                                  identity of A may be compromised, and in fact fully controlled
+query A,B,spk,pqpk,sk,i,j;
+  event(BlakeDone(A,B,spk,pqpk,sk))@i
+                                                                  by the attacker. That is, if we ask P ROVERIF to prove this
+            =⇒ not(attacker(sk))                                  query, it will come up with an attack trace against it where A
+                | (event(LongTermComp(A))@j & j<i)                was compromised. As this is a normal and expected insecure
+                | (event(QuantumComp)@j & j<i)                    case, we then adapt and fix the property we are trying to prove
+                                                                  by adding this normal case to the insecure case disjunctions.
+                                                                      Our methodology is to rely on the high automation level of
+Here, the time point j represents either the compromise of        P ROVERIF to iteratively do this process, and add the possible
+the long term key of A, or the arrival of quantum computers.      compromises that are “normal” cases, until we reach a point
+And this read as, if any agent Blake completed a session and      where either P ROVERIF proves the security by validating the
+computed key sk, then either the attacker cannot compute the      query, or we find an attack that does not correspond to a
+key, or the long term key of A was compromised before, or         normal compromise case, and in fact invalidate the security.
+the attacker had access to a quantum computer before. If the          By following this informal methodology, one can obtain
+query is true, it implies that at least one of the cases must     a query where the disjunction of compromise cases are all
+be true, which in turn implies forward secrecy, as all session    independent, and where removing a single one of the cases
+keys computed before the compromise at time j is secret.          falsifies the query. When such a query is true, it can be seen
+  We can also state an even stronger property that the session    as a correct and maximal formulation of the security property:
+key is indistinguishable from a freshly generated random key,     it is correct in the sense that it is met by the protocol, and
+which is what we typically prove in C RYPTOV ERIF.                maximal in the sense that removing any part of the security
+
+
+
+474   33rd USENIX Security Symposium                                                                         USENIX Association
+property yields an attack and it thus captures that maximal        is thus completely insecure, and conversely for the classical
+variant of this security property. Note that in our methodol-      proof, no assumption is made over the KEM.
+ogy, one has to indeed manually check that all the cases in           The first proof under the classical security assumptions
+the disjunction are indeed independent, and that removing a        of gapDH for the curve, EUF-CMA for Sig, IND-CPA+INT-
+single one leads to an attack. This maximality notion is not a     CTXT for the AEAD and the ROM for the KDF should ensure
+notion of completeness with respect to the real world or the       that PQXDH is as secure as X3DH was.
+computational model, but it is one with respect to our models         The second proof, this time under classical EUF-CMA for
+and the Dolev-Yao attacker. As our models do include the           Sig, and post-quantum IND-CCA for the KEM, and post-
+possible dynamic compromise of any cryptographic material          quantum PRF for the KDF, ensures that PQXDH does bring
+used by any party, this gives us a high level of confidence        a new post-quantum resistance. We rely on the PRF assump-
+in the analysis, and in the end we obtain security properties      tion for the KDF, both because the post-quantum soundness
+that give us an exhaustive understanding of in which cases         of C RYPTOV ERIF does not capture the quantum ROM, and
+security holds.                                                    second because the PRF assumption is in fact more canonical
+   Interestingly, formulating this kind of property captures at    and we can use it thanks to the new KEM shared secret.
+once multiple flavours of the previously mentioned classical
+security properties for key exchanged. We typically cover in
+a single query the forward secrecy, session independence and       Security Proofs For authentication goals, C RYPTOV ERIF
+HNDL resistance.                                                   follows a similar syntax to P ROVERIF. Consider Alex’s au-
+   We will detail attacks found when doing this iterative pro-     thentication query. If we can prove this, it means that when-
+cess of query definition, as well as the final queries we proved   ever Alex accepts in the cryptographic game, then with over-
+on the fixed version of the protocol, in the next sections.        whelming probability Blake did accept and agrees on the
+                                                                   given SK. A core difference with P ROVERIF is that we cannot
+                                                                   consider whether some agents are compromised inside the
+3.5    Cryptographic Proofs in C RYPTOV ERIF                       query. Instead, we modify the protocol so that we only raise
+C RYPTOV ERIF is used to make cryptographic proofs of pro-         the corresponding events when the other party is honest and
+tocols in the computational model. Such proofs are closer to       not yet compromised.
+the reasoning used by cryptographers, and model attackers             For secrecy, C RYPTOV ERIF enables us to check that a set
+more precisely by considering that they can be any computer        of variables will always contain strongly secret values, we
+running in a reasonable time. It thus gives guarantees simi-       then similarly only set these variables in the protocol with
+lar to cryptographic proofs under common assumptions such          a derived key when the two parties are honest and not yet
+as gapDH, IND-CCA or EUF-CMA. It allows an analyst to              corrupted.
+specify the original protocol as a cryptographic game as well         Note that those approaches are more rigid than P ROVERIF,
+as security properties, and then tries to automatically apply a    and in addition coming up with a proof is significantly harder
+set of valid game transformations in order to obtain a proof. It   in C RYPTOV ERIF, we thus focus on a smaller set of simpler
+supports manual guidance of the proof, which is often needed       properties, trying to prove the core data authentication and
+in complex applications. Importantly, C RYPTOV ERIF was            forward secrecy properties.
+recently updated to be post-quantum sound [15], and we can
+use it to provide valid computational guarantees for post-
+quantum attackers. Overall, C RYPTOV ERIF has a stronger
+                                                                   3.6 Using both P ROVERIF and C RYPTOV ERIF
+attacker model than P ROVERIF, it is less automated and does
+not do attack finding. Further, while the security guaran-         To summarize, our global approach is twofold:
+tees of C RYPTOV ERIF are stronger, as they correspond to the
+                                                                      • in P ROVERIF we iteratively derive precise and exhaus-
+computational model, making proofs in this model is more
+                                                                         tive security properties, but in a slightly weaker attacker
+difficult. We sometimes have to consider fewer compromise
+                                                                         model than classical cryptographic proofs;
+scenarios than is possible in the highly automated P ROVERIF.
+                                                                      • in C RYPTOV ERIF we obtain strong guarantees in the
+All those elements highlight the value of combining the two
+                                                                         computational model , but on a subset of the properties
+approaches.
+                                                                         and possible compromises considered in P ROVERIF.
+                                                                      Our final methodology is then to use both tools in parallel.
+Cryptographic Assumptions In C RYPTOV ERIF, the goal               As we shall see in the following sections, each part of the
+is to carry out the proofs under the cryptographic assumptions     analysis provided some feedback that could be used for the
+from Section 2.5, one in the classical setting and another in      other part, and using both tools in combination allowed us to
+the post-quantum one. Importantly, in the post-quantum proof,      discover strictly more weaknesses than using then individu-
+we simply do not make any assumption over the curve which          ally.
+
+
+
+USENIX Association                                                                     33rd USENIX Security Symposium          475
+4     Protocol Flaws in the PQXDH version 1                        that no attack is confirmed, as failing to do a proof does not
+                                                                   imply that this proof cannot be made.
+The revision 1 of PQXDH [29] allowed for a number of                  To fully confirm the attack, we then explicitly stated in
+implementations which would have suffered from attacks.            P ROVERIF that KEM and DH public keys could be con-
+   We classify our attacks into two categories, one for the        fused together and lead to the insecurity of the encapsulations.
+concrete and immediate issues that developers working on           P ROVERIF then produced a concrete attack trace, where the
+post-quantum protocol migration should always have in mind,        attacker was able to compute the KEM shared secret and thus
+and one for the more generic design considerations and pit-        break the post-quantum security guarantees.
+falls. The immediate issues are two main attacks on the design
+that we uncovered, along with the justification of why it is
+                                                                   Practical consequences In the Signal implementation, this
+avoided on the concrete Signal implementation. The more
+                                                                   attack is prevented, since the key sizes of Kyber1024 and
+generic design considerations are made of additional feed-
+                                                                   X25519 do not match, and in addition each key is prefixed by
+back on weaknesses of the specification, which do not directly
+                                                                   a byte identifying the algorithm. Adding this format disjoint-
+translate as attacks on one of our target security properties,
+                                                                   edness as an explicit condition to the specification prevents
+but impact the overall resistance of the design.
+                                                                   any future problems with other KEM/DH combinations, or
+   The models used to find those attacks are available at [12].
+                                                                   for other independent implementations.
+All experiments were executed on a common laptop with
+                                                                      Interestingly, this issue illustrates how adding an extra,
+32Gb of RAM and an 11th Gen Intel(R) Core(TM) i7-1165G7
+                                                                   provably-secure component to an already-secure protocol
+@ 2.80GHz CPU. All attacks are found in a few minutes so
+                                                                   may in fact downgrade the guarantees of the protocol. This
+we do not detail more the runtimes here. Expected runtimes
+                                                                   serves as a cautionary tale for other protocols seeking to use
+are provided in each corresponding modeling file.
+                                                                   hybrid constructions for post-quantum security.
+
+4.1      Attacks on the design                                     4.1.2   KEM Re-Encapsulation Attack
+4.1.1    Public Key Confusion Attack
+                                                                   The attack is based on the fact that under the classical IND-
+We discovered that nothing in the specification ensures that       CCA assumption for KEMs, it is possible to perform so-called
+it is possible to distinguish between a KEM and a X25519           re-encapsulations. Consider an honest KEM encapsulation
+public key. This in turn leads to an attack where computations     result (SS, CT) for some key pair (sk, pk), and an additional
+with one algorithm are made with public keys of another            key pair (sk′ , pk′ ). If the first key pair was compromised and
+algorithm, thus falling outside its secure usages.                 the attacker knows (CT, sk, pk′ ), it may in fact be able to com-
+                                                                   pute CT′ such that decaps(CT′ , sk′ ) = SS, that is, produce
+                                                                   a valid encapsulation for pk′ of the same shared secret SS.
+Attack description This theoretical attack runs as follows:        This scenario is compatible with the IND-CCA assumption,
+ 1. An attacker swaps the two signatures from Blake before         and typically arises when we use IND-CCA secure public key
+    forwarding them to Alex;                                       encryption scheme to build an IND-CCA secure KEM. This
+                              $
+  2. Alex computes CT, SS ←      − KEM.encaps(SPKpk   B ), using   class of attacks was introduced in [22], which we find a new
+      an elliptic curve public key, and then computes multiple     variant here.
+      DH exponentiation over a KEM public key.
+  3. Given CT and EK, the attacker can recompute all the se-
+                                                                   Attack description Consider the following execution, fully
+      cret values, are they all stem from insecure computations
+                                                                   described in Fig. 3:
+      over invalid public keys for the given algorithm.
+                                                                     1. An attacker is able to compromise some PQSPKB of
+   This is a theoretical attack over the design of the proto-
+                                                                        some Blake, while another PQSPK′B of the same agent
+col, as it makes it impossible to prove its security under the
+                                                                        is uncompromised.
+classical IND-CCA or gapDH assumptions. Indeed, those
+                                                                     2. The attacker makes Alex use PQSPKB , and obtain a ci-
+assumptions do not explicitly specify what happens when
+                                                                        phertext CT, from which it can learn the shared secret
+invalid public keys are used, and in fact they imply that there
+                                                                        SS, as PQSPKB was compromised.
+is no security guarantees in such a case.
+                                                                     3. Now, the attacker, not violating IND-CCA of the KEM,
+                                                                        comes up with a new ciphertext CT, valid for PQSPK′B ,
+Discovery methodology Trying to prove the secrecy of the                such that the decapsulation of CT′ is also SS
+key in C RYPTOV ERIF led to a failure, where we were in fact         4. The attacker then forwards to Blake the message from
+unable to carry out the proof under the standard assumptions.           Alex, but swaps CT by CT′ , and the key identifier of
+We were thus forced to add a domain separation between the              PQSPKB by PQSPK′B .
+public-key signatures to carry out the proof. Note at this point     5. Blake succeeds in computing the key using PQSPK′B .
+
+
+
+476     33rd USENIX Security Symposium                                                                       USENIX Association
+                                      pk                                                                              pk
+                          IKsk
+                            B , IKA                                                                                 IKB , IKsk
+                                                                                                                            A
+                              B LAKE                                          C HARLIE                               A LEX
+
+
+                    pk $
+        SPKsk       − DH.Keygen
+           B , SPKB ←
+                                   pk $
+        PQSPKsk         − KEM.Keygen
+             B , PQSPKB ←
+        Ephemeral Compromise
+
+                                           sign(PQSPKpk    sk        sk
+                                                     B , IKB ), PQSPKB
+
+                    ′pk $
+        SPK′Bsk , SPKB ←
+                       − DH.Keygen
+                                   ′pk $
+        PQSPK′Bsk , PQSPKB ←
+                           − KEM.Keygen
+
+                                   sign(SPK′Bpk , IKsk             ′pk   sk          ′pk   sk             pk    sk
+                                                    B ), sign(PQSPKB , IKB ) sign(SPKB , IKB ), sign(PQSPKB , IKB )
+
+
+                                                                                               Verify signatures
+                                                                                                       pk $
+                                                                                               EKsk      − DH.Keygen
+                                                                                                 A , EKA ←
+                                                                                                       $                         pk
+                                                                                                      − KEM.encaps(PQSPKB )
+                                                                                               CT, SS ←
+                                                                                                             ′pk sk     pk   sk     ′pk  sk
+                                                                                               SKB = kdf((SPKB )IKA ∥(IKB )EKA ∥(SPKB )EKA ∥SS )
+                                                                                               AD = IKApk ∥IKBpk
+                                                                                                 pk
+                                                                                              EKA , CT , aead
+
+                                                                                                           ′pk
+                                                CT′ = KEM.AEnc(KEM.decaps(CT, PQSPKsk
+                                                                                   B ), PQSPKB )
+
+                                                      pk
+                                                  EKA , CT′ , aead
+
+ SS = KEM.decaps(CT, PQSPK′Bsk )
+              pk        ′sk          pk    sk    pk        ′sk
+ SKA = kdf((IKA )SPKB ∥(EKA )IKB ∥(EKA )SPKB ∥SS)
+                   pk         pk
+ Check if AD = IKA ∥IKB
+ Decrypt and check aead
+
+
+
+                                                                 Figure 3: Re-encapsulation attack
+                         Elements not following the standard execution are highlighted with a light gray background.
+
+
+
+
+USENIX Association                                                                                     33rd USENIX Security Symposium      477
+The main issue here is that the compromise of a single                Even after accounting for the ‘info‘ field, there remains a
+PQSPKB enables an attacker to compromise all future KEM            concern that the format of the KDF input key material be-
+shared secrets of Blake, and this even after Blake deleted its     tween X3DH and PQXDH can be confused with each other.
+compromised PQSPKB . Formally, it is an attack on the ses-         For example, X3DH may use 3 or 4 DH shared secrets con-
+sion independence, and also imply that there is no mutual          catenated with each other as the KDF input, while PQXDH
+agreement on the KEM public key used.                              concatenates either 3 DH and 1 KEM secret, or 4 DH and 1
+                                                                   KEM secret. Within PQXDH, the ‘info‘ field prevents con-
+                                                                   fusions, but there could still theoretically be a cross-protocol
+Discovery As stated previously, our C RYPTOV ERIF models
+                                                                   attack between PQXDH (3DH+SS) and X3DH (4DH) de-
+do not include possible compromise of ephemeral values (this
+                                                                   pending on what info field the application chooses in X3DH,
+is a limitation to be lifted). We were thus able to complete the
+                                                                   since the X3DH specification does not mandate the contents
+proof of the protocol under the classical hypotheses. However,
+                                                                   of its ‘info‘ fields.
+by using P ROVERIF, where in fact the basic way to model a
+                                                                      This is another interesting instance where the composition
+KEM is to use an asymmetric encryption to encrypt a fresh
+                                                                   of two protocols can potentially result in attacks even if both
+shared secret, we could find this attack automatically. It is
+                                                                   protocols are individually secure.
+a surprising corner case, where the classical way to model
+something in the symbolic model already captures a non-
+trivial potential attacker capability.                             4.2.2   Weak Post-Quantum Forward Secrecy
+                                                                   A part of the post-quantum forward secrecy guarantees of
+Practical consequences We checked whether Kyber al-                PQXDH relies on Alex receiving a signed one-time KEM
+lowed for such re-encapsulations, which turns out not to be        public key PQOPK and the corresponding Blake deleting
+the case. So, while it was only formally proven to be IND-         the corresponding private key after receiving the PQXDH
+CCA secure, Kyber in fact guarantees an additional security        message. However, since both the PQOPK and the signed
+assumptions, where the secret is tied to the corresponding         last-resort KEM key PQSPK are signed with the same key,
+public key and ciphertext.                                         and both have the same encoded format, it is impossible for
+   To verify the current implementation, we had to define this     Alex to know whether they are using a last resort or one-time
+additional security property, prove that it is met by Kyber, and   key.
+prove that there is under this assumption agreement on the            As a consequence, PQXDH offers a weaker forward se-
+public key used in a session, effectively disabling our attack.    crecy guarantee than Alex may expect, since Alex cannot
+This is detailed in Section 5.3.                                   know if the decryption key will be immediately deleted. In
+   Importantly, implementations of the specification that          practice, however, the last-resort key PQSPK is a medium-
+would have used a IND-CCA asymmetric encryption to build           term secret, and will be deleted by Blake after some time.
+the KEM would have suffered from this. In addition, there
+are schemes for which the security is unclear: both BIKE and
+HQC do not directly tie the shared secret to the public key, but   5     Formal Verification of PQXDH version 2
+only to the ciphertext. Finally, the McEliece KEM is such that
+“modifying one bit in a public key has a significant chance of     We detail here our provably secure update of the revision
+not affecting any particular ciphertext” [1, Section 3], and its   that was published by Signal. As the existing implementation
+designer conclude that “Application designers are encouraged       does not directly follow some of our recommendations, we
+to assume solely the standard IND-CCA2 property”.                  also verified that the existing implementation is secure by
+                                                                   introducing a dedicated KEM assumption. Looking ahead,
+                                                                   we also reflect on the limitations of our model, as well as
+4.2      Design Considerations                                     propose a few possible protocol changes for a revision 3 to
+                                                                   improve its future resilience.
+4.2.1    KDF Input Confusion                                          The models used to obtain the proofs are also available
+At first glance, it may appear that PQXDH also has an en-          at [12]. Similarly to the attack finding case, all proofs are
+coding ambiguity in the format of keys used in various calls       completed in a few minutes.
+to the key derivation function (KDF) in the protocol. In fact,
+the ‘info‘ field contains enough information though to disam-      5.1     Protocol Changes in version 2
+biguate these KDF calls.
+   In our first P ROVERIF model, we ignored the ‘info‘ field       To address all the previous points, we recommended multiple
+and the tool found several cross-protocol attacks. Ignoring        fixes that were integrated inside a new revision [30]. We
+such seeming low-level details when modeling a protocol can        provide a diff between revision 1 and revision 2 at [28] for
+sometimes miss attacks, and at other times yield false attacks.    ease of reading, with the following updates:
+
+
+
+478     33rd USENIX Security Symposium                                                                      USENIX Association
+   • To address the key-encapsulation attack, we mentioned          impersonation, session independence and resistance to “har-
+     that the PQSPK should be included inside the Authenti-         vest now decrypt later” attacks in case of a DH break down.
+     cated Data of the AEAD, or the KEM should in fact meet           In addition, it also provides data agreement over the shared
+     an additional security property and bind together the se-      pre-key used.
+     cret and the public key ( [30, Section 3.3]). As the exact
+                                                                       Using the exhaustive analysis approach, we have an exhaus-
+     security definition needed for the KEM does not have
+                                                                    tive list of compromise cases that break the security of the
+     for the moment a clear consensus, we did not put any
+                                                                    protocol, which leads to a couple of interesting observations:
+     clear definition in the draft. We however in this work de-
+                                                                      1. The OPK does not increase the security of the key de-
+     fine our own sufficient security property, see Section 5.3.
+                                                                          rived by Blake as much as might be expected. This is
+     This is also detailed in the revision ( [30, Section 4.12]).
+                                                                          a consequence of it being unauthenticated, the attacker
+   • To address the key confusion attacks, we now explicitly
+                                                                          can then always send a malicious one instead, or more
+     state that the range of the encoding functions for public
+                                                                          importantly never send one. Developing a way to detect
+     keys must be pairwise disjoint ( [30, Section 2.1]).
+                                                                          if when the server does not provide an OPK there are in-
+   • As an intermediate step (as we do not provide guarantees
+                                                                          deed no more OPK available is an interesting challenge.
+     over this in the untrusted server setting), We added key
+                                                                      2. Compromising the SPKB of some agent Blake allows an
+     identifiers for the PQSPK and PQOPK that enables Alex
+                                                                          attacker to impersonate Blake for any other agent that
+     to know whether it is a one time or not pre shared key
+                                                                          could want to talk to Blake. It arises from the fact that
+     ( [30, Section 2.5]).
+                                                                          Alex only authenticates to Blake by using a long term
+   • Our security theorems are integrated at the beginning of
+                                                                          DH share IKA combined with the SPKB , an attacker com-
+     the Security Considerations ( [30, Section 4]).
+                                                                          promising SPKB can then compute the corresponding
+   • We made explicit the missing hypothesis that the AEAD
+                                                                          DH secret and impersonate Alex. In practice, it means
+     must be IND-CPA+INT-CTXT even against quantum
+                                                                          that PQXDH does not meet what could be called an
+     attackers ( [30, Section 4.7]).
+                                                                          Ephemeral Key Compromise Impersonation.
+   • We added a discussion on key identifiers, not included
+                                                                       We also obtained security theorems providing computa-
+     in our presentation of the protocols, but that are used by
+                                                                    tional guarantees on the protocol with C RYPTOV ERIF.
+     Alex to tell Blake which key is used. Including them in
+     our models highlighted that they are in fact not security      Theorem 2 (PQXDH classical computational security). If
+     relevant ( [30, Section 4.13]).                                X25519 satisfies the gapDH assumption, the KDF is a Ran-
+                                                                    dom Oracle, if the AEAD is IND-CPA+INT-CTXT and if
+                                                                    the signature scheme is EUF-CMA, then PQXDH guaran-
+5.2 Security Theorems proved with P ROVERIF                         tees both the secrecy of the sent message, as-well-as peer-
+    and C RYPTOV ERIF                                               authentication with agreement over identities, OPK and SPK
+                                                                    used, modulo the subgroup elements of X25519, as well as
+The previous modifications of the revision were proposed
+                                                                    agreement over the PQSPK used provided it was included in
+only after we tried them in our models. In particular, on the
+                                                                    the AD.
+version where we explicitly assume that signatures of SPK
+and PQSPK cannot be confused and that the PQSPKB is in-                Importantly, compared to revision 1, we do have authenti-
+cluded inside the AD, we were able to obtain a number of            cation of the KEM public key used, as soon as it is in the AD.
+security theorems.                                                  Importantly, we stress that Signal does not do this, but Kyber
+   The iterative process described previously in order for us to    meets an additional property ensuring this, which we discuss
+obtain the most precise possible security queries in P ROVERIF      in Section 5.3.
+yields complicated queries, with many possible disjunctions.
+                                                                    Theorem 3 (PQXDH post-quantum computational security).
+Recall that such queries are correct in the sense that PQXDH
+                                                                    Under IND-CCA for the KEM, if the KDF is a PRF and the
+does satisfy it, and it is complete in the sense that removing a
+                                                                    final AEAD is IND-CPA+INT-CTXT, as long as the signa-
+single case of the disjunction leads to an attack trace, which
+                                                                    ture scheme was unforgeable when some key exchange was
+is however a normal insecurity case. This means that this
+                                                                    completed, secrecy of the derived key still holds in the future.
+query does capture precisely the full security guarantees of
+PQXDH in presence of many possible compromises.                       Importantly, recall that we do get guarantees against a post-
+   For ease of reading and clarity, we only provide a high-         quantum attacker, as C RYPTOV ERIF was recently updated in
+level theorem for all our symbolic results here. The detailed       order to be able to provide such guarantees [15].
+queries and corresponding exhaustive theorems are provided
+in Appendix A.                                                      5.3 KEM Public Key Agreement for PQXDH
+Theorem 1. PQXDH in the symbolic model provides peer-               As the re-encapsulating attack can be carried out without
+authentication, forward secrecy, resistance to key compromise       violating the IND-CCA assumption, it turns out that the IND-
+
+
+
+USENIX Association                                                                      33rd USENIX Security Symposium         479
+CCA security of the KEM scheme is not enough to show the              1. CCR ̸⇒ SH-CR
+full security of PQXDH. As mentioned in our modification              2. SH-CR ̸⇒ CCR
+for revision 2, we either need that the PQSPKB KEM public
+key is tied inside the AD of the AEAD, or that the KEM secret       Proof. The proof are direct constructions, though probably
+is in fact bound in some way to the used public key.                not practical.
+   The difficulty is that this binding between the secret and          For 1), consider a CCR secure KEM scheme
+public key is not covered by classical cryptographic defini-        (keygen, encaps, decaps). We generate from it KEM’,
+tions. It is of course typically not covered by IND-CCA, but        where keygen′ appends 0 to all public keys, and encaps′
+it is also not covered by the main previous definitions, as         simply ignores the last bit of the public key and runs encaps.
+surveyed e.g. in [39, Fig. 2]. In all those definitions, the at-    This is still a CCR secure scheme, but it is clearly not SH-CR
+tacker is trying to come up with an attack against the KEM          as the attacker can simply set pk′ to be pk but swapping the
+for honestly generated keys that are never compromised.             last bit from 0 to 1, and then win the game.
+   Crucially, in our setting and for re-encapsulation attacks, as      For 2) consider a SH-CR secure KEM scheme, and such
+outlined in [22], the attacker may know the key. We describe        that, without loss of generality, encaps returns with at most
+in the following a tailored KEM security assumption that en-        negligible probability for any input a ciphertext equal to just
+abled us to prove the security of PQXDH under this assump-          0 and 1. We set decaps′ to be decaps, expect on input 0
+tion, and also provide a proof that Kyber does in fact meet this    and 1, where it arbitrarily returns 0. That is, for any key,
+assumption. Thus, we demonstrate that the re-encapsulation          decaps′ (0, sk) = decaps′ (1, sk). This means that KEM’ is
+attack is not practical for Kyber, and we prove the security of     clearly not CCR secure. However, it is still SH-CR, because
+the existing implementation which does not include the KEM          0 and 1 may never be returned by the honest encapsulation
+in the AD, as required by Theorem 2.                                yielding ct in the SH-CR definition.
+
+5.3.1    Tailored KEM definition                                       We cannot directly find our notion in [22] either, as they
+                                                                    consider for all the definitions either two honestly generated
+The core issue of the re-encapsulation attack is that we don’t      keys (e.g. in HON-BIND-K-CT), two leaked keys (e.g. in
+have authentication over the PQSPKB used by Alex. In the            LEAK-BIND-K-CT), or two maliciously generated keys (e.g.
+PQXDH setting, we can define a semi-honest collision re-            in MAL-BIND-K-CT), but not our semi-honest setting.
+sistance property over the KEM that enables us to prove this           However, similarly to the fact that MAL-Bind-K-CT ⇒
+authentication.                                                     CCR as discussed in [6], we trivially have on our side that
+                                                                    MAL-Bind-K,CT-PK ⇒ SH-CR.
+Definition 1 (SH-CR). We define the advantage of an adver-
+sary A against a KEM (keygen, encaps, decaps) semi-                    More generally, we do not claim that SH-CR is the ideal
+honest collision resistance as:                                     security definition that KEMs should target, but it is the ideal
+                                                                    one for our setting and for use in C RYPTOV ERIF, enabling us
+ AdvSH-CR  =                                                        to carry out all our proofs.
+   A ,KEM                                    $
+                                                               
+                                            − keygen()
+                                     sk, pk ←
+                                        $
+     decaps(ct ′ , sk) = ss∧     pk′ ←                             5.3.2   KEM public key agreement
+                                                       
+                                       − A (sk)         
+ Pr 
+               ′ ∨ pk ̸= pk′ ) |                       
+       (ct ̸
+           = ct                   ss, ct ←
+                                          $          ′ 
+                                          − encaps(pk ) 
+                                                                   Using C RYPTOV ERIF, we proved the following two theorems
+                                          $
+                                     ct ′ ←
+                                          − A (sk, ss, ct)          based on SH-CR.
+
+   Here,we have one agent that will decapsulate for its own         Theorem 5 (Kyber is SH-CR). If the hash functions used in
+honestly generated but compromised sk an attacker chosen            the Kyber design are modeled as Random Oracles, Kyber is
+ciphertext, another agent that will encapsulate against an at-      SH-CR.
+tacker chosen key, and the attacker wins if both computes the
+same secret, while either not using the same public key or the        For the reasons mentioned previously in the practical impli-
+same ciphertext. Intuitively, this corresponds to the minimal       cations of the re-encapsulation attack, it is clear that McEliece
+security property needed to prove KEM ciphertext and public         does not meet SH-CR, and the situation is unclear for BIKE
+key agreements in PQXDH.                                            and HQC.
+   Notice that this is logically independent of the CCR defi-         However, as Signal specifically uses Kyber, we can obtain
+nition from [6], where the attacker tries to come up with two       guarantees over the current implementation.
+arbitrary ciphertexts that decapsulate to the same value for a
+                                                                    Theorem 6 (PQXDH KEM public key agreement). Under
+given honestly generated but compromised secret key. The
+                                                                    similar hypothesis as Theorem 2, PQXDH also guarantees
+separations between the two can be proven as follows.
+                                                                    the agreement over the PQSPK used provided the KEM is
+Theorem 4. We have the following separations:                       SH-CR.
+
+
+
+480     33rd USENIX Security Symposium                                                                        USENIX Association
+5.4    Toward PQXDH version 3                                        6.1    Designing Hybrid schemes
+Our analysis also suggest further improvements towards a             The core issues we identify that one should consider when
+future revision 3 of the protocol, which would also require          updating a protocol to a post-quantum variant are:
+changes to the implementation. While these changes do not              • The added KEM public key and ciphertext should be
+thwart any known attack, we believe they would increase the              mutually authenticated, otherwise IND-CCA is probably
+trust in the overall design, as well as simplify the proofs. The         not enough to prove the protocol secure, and the pro-
+envisioned changes are:                                                  tocol may in fact be insecure for some specific KEM
+   • to add a tag under the signature of the PQSPK, so that              instantiations.
+      Alex can know whether it is using a one time or a last           • Domain separation within the protocol between DH pub-
+      resort PQSPK. While this does not prevent a malicious              lic keys and KEM public keys is crucial, as confusion
+      server to only provide last resort PQSPK to the attacker,          may lead to a downgrade of security.
+      it would at least ensure that Alex knows the correspond-         • Domain separation between distinct protocols is impor-
+      ing security level;                                                tant. This is a typical case where both the old classical
+   • to add all the public keys used inside the KDF input, in            version of the protocol and it’s post-quantum version
+      order to strengthen the data agreement and avoid relying           will exist in parallel, so derived keys and other materials
+      on SH-CR.                                                          should not be confused between the two.
+
+
+5.5    Limitations of our Proofs                                     6.2    Formal verification
+We note that our proofs only hold for our models, which do           Our approach highlighted the interest of using both P ROVERIF
+not capture all the details of how the protocol is deployed.         and C RYPTOV ERIF in combination to analyze protocols:
+   The first limitation is that Signal uses the long term identity     • The lack of domain separation makes it impossible to
+keys IK for both curve operations using X25519 as-well-as sig-            get a C RYPTOV ERIF proof, so we can quickly suspect
+nature operations XEdDSA. This is a joint key reuse between               the presence of a confusion attack. These attacks are
+algorithms, where one would in fact need a joint security hy-             not caught by default in P ROVERIF, since the standard
+pothesis on both primitives, in the vein of [37]. This issue              definitions of cryptographic primitives in P ROVERIF em-
+was completely ignored in the pen-and-paper Signal analy-                 bed domain separation. But once we suspect an attack,
+sis [21], where the signatures were simply dropped and the                we can model it explicitly and then use P ROVERIF to
+data assumed to be pre-authenticated. We take a more precise              confirm a concrete attack on the protocol.
+approach, by still including the signatures, but assuming that         • We can model more compromises in P ROVERIF, and
+IK contains two key pairs, one for curve computations and one             thus catch some attacks not covered by a C RYPTOV ERIF
+for signatures. Coming up with a precise model to capture this            proof. One such attack is found, we can fix the proto-
+key reuse is still an open question, even without considering             col, and then go back to the C RYPTOV ERIF model and
+a formal C RYPTOV ERIF proof.                                             formally prove that the attack is indeed removed.
+   A second limitation is that the C RYPTOV ERIF model only            • Our exhaustive methodology in P ROVERIF allows us to
+considers the compromise of the long term keys, and not                   capture as many attacks as the tool can find. One should
+of the ephemeral keys. The difficulty here is that each new               always first try to include all possible compromises in
+compromise implies to completely redo the proof, and notably              the model, and then refine the security queries until they
+also redefine variants of the cryptographic axioms that allow             can be proved.
+for those compromises.
+   A third limitation is that we do not model or prove anything
+about deniability, which we leave as an open question.
+                                                                     7     Related Work
+   A fourth and final limitation, of both the C RYPTOV ERIF
+                                                                     This work is the first to analyze PQXDH and led to an update
+and P ROVERIF models, is that we only consider PQXDH,
+                                                                     of the specification within months of its release. As such,
+and not the full eco-system. Lifting this limitation however
+                                                                     there is no previous related work precisely on PQXDH. In
+represents a major challenge for our tools.
+                                                                     the following, we discuss closely related work.
+                                                                        Our work follows in the line of previous formal analysis
+6     Lessons learned                                                of protocol standards using the same or similar verification
+                                                                     tools, e.g. of TLS 1.3 [11], 5G-AKA [8], EMV [9, 34] or
+Our formal analysis in collaboration with Signal’s protocol de-      EDHOC [26], where those analyzes often led to updates of
+signers and developers highlighted several interesting points,       the protocol specifications and implementations.
+both with respect to the design of future hybrid schemes,               A variant of X3DH was previously studied in [27]. Our
+as-well-as how to carry out such formal verifications.               C RYPTOV ERIF models were inspired by them but heavily
+
+
+
+USENIX Association                                                                       33rd USENIX Security Symposium        481
+adapted, both to match the X3DH version as-well-as the            and curve computations, and designing and analyzing a post-
+PQXDH model. Our P ROVERIF models were, on the other              quantum secure Double Ratchet protocol.
+hand, rewritten from scratch.
+   The Signal application eco-system is wider than X3DH,
+as the derived key is used in combination with the Double-
+                                                                  Acknowledgments
+Ratchet (DR) protocol, and an additional layer is introduced
+                                                                  This work was partly done while Charlie Jacomme was at In-
+by the Sesame multiple session management protocol. X3DH
+                                                                  ria, Paris, France. This work benefited from funding managed
+composed with the subsequent DR protocol was analyzed
+                                                                  by the French National Research Agency under the France
+with a pen-and-paper computational proof in [21], but they
+                                                                  2030 programme with the references ANR-22-PECY-0006
+made rather strong assumptions over the way public keys are
+                                                                  (PEPR Cybersecurity SVP) and ANR- 22-PETQ-0008 (PEPR
+authenticated, whereas we model the signatures over those
+                                                                  Quantic PQ-TLS).
+keys, which are crucial to some of the weaknesses we found.
+More pen-and-paper proofs of the composed X3DH +DR
+protocol can be found in [3, 13]. In our work, we prove strong    References
+formal guarantees for the new PQXDH protocol in isolation.
+   Implementations of X3DH and DR were also analyzed               [1] Classic mceliece. conservative code-based cryptogra-
+using DY* [10], and their integration within Sesame was                phy: design rationale. online, 2022. https://classi
+analyzed using the Tamarin prover [24]. Both these works are           c.mceliece.org/mceliece-rationale-20221023.
+only inside the symbolic model and use less precise models             pdf.
+and cryptographic assumptions for X3DH than our work.
+   Importantly, none of the results of the previous analyzes of    [2] Module-lattice-based key-encapsulation mechanism
+X3DH carry over to PQXDH, as extending a secure protocol               standard. Technical report, Gaithersburg, MD, 2023.
+with new elements can break its security, even if all these        [3] Joël Alwen, Sandro Coretti, and Yevgeniy Dodis. The
+elements are individually secure. Indeed, our work uncovers            double ratchet: security notions, proofs, and modular-
+a potential attack on X3DH because of new key confusions               ization for the signal protocol. In Annual International
+introduced by PQXDH version 1.                                         Conference on the Theory and Applications of Crypto-
+   A few other tools support post-quantum computational                graphic Techniques, pages 129–158. Springer, 2019.
+guarantees, such as Squirrel [4, 23] and EasyCrypt [5, 7, 38],
+but they have not yet been applied to protocols like PQXDH.        [4] David Baelde, Stéphanie Delaune, Adrien Koutsos,
+For us, it was natural to rely on C RYPTOV ERIF by building            Charlie Jacomme, and Solène Moreau. An interactive
+on the previously developed models of X3DH.                            prover for protocol verification in the computational
+   We also uncover an attack based on subtle definitions of            model. In 42nd IEEE Symposium on Security and Pri-
+KEMs, similar to the re-encapsulations attacks discussed               vacy (S&P’21),, pages 537–554, Los Alamitos, CA, May
+in [22]. We discuss the actual KEM security assumption                 2021. IEEE Computer Society Press.
+needed for our setting, and link it with recent works [6, 22].
+                                                                   [5] Manuel Barbosa, Gilles Barthe, Xiong Fan, Benjamin
+                                                                       Grégoire, Shih-Han Hung, Jonathan Katz, Pierre-Yves
+8     Conclusion                                                       Strub, Xiaodi Wu, and Li Zhou. Easypqc: Verifying post-
+                                                                       quantum cryptography. In Proceedings of the 2021 ACM
+We performed an extensive analysis of the recent PQXDH
+                                                                       SIGSAC Conference on Computer and Communications
+proposal, finding design flaws, contributing concrete updates
+                                                                       Security, pages 2564–2586, 2021.
+to the protocol specification, and developing machine-checked
+security proofs for the fixed version.                             [6] Manuel Barbosa, Deirdre Connolly, João Diogo Duarte,
+   This work was performed in collaboration with the Signal            Aaron Kaiser, Peter Schwabe, Karoline Varner, and Bas
+design team and demonstrates how formal methods can be                 Westerbaan. X-wing: The hybrid kem you’ve been
+efficiently used in a short time frame to improve the design           looking for. Cryptology ePrint Archive, February 2024.
+of post-quantum hybrid protocols.                                      https://eprint.iacr.org/archive/2024/039/1
+   It also highlights the interesting synergy of using multiple        707692113.pdf.
+tools, as the analysis results from both C RYPTOV ERIF and
+P ROVERIF mutually improved each other.                            [7] Gilles Barthe, Benjamin Grégoire, Sylvain Heraud, and
+   Much work remains to be done around the formal analysis             Santiago Zanella Béguelin. Computer-aided security
+of Signal and of post-quantum secure messaging in general.             proofs for the working cryptographer. In Phillip Rog-
+Important future goals include precisely modeling the full             away, editor, Advances in Cryptology – CRYPTO 2011,
+Signal eco-system, developing computational analyzes that              volume 6841 of Lecture Notes in Computer Science,
+can capture the long term identity key reuse for signatures            pages 71–90, Berlin, Heidelberg, August 2011. Springer.
+
+
+
+482    33rd USENIX Security Symposium                                                                    USENIX Association
+ [8] David Basin, Jannik Dreier, Lucca Hirschi, Saša             [17] Joppe W. Bos, Léo Ducas, Eike Kiltz, Tancrède Lepoint,
+     Radomirovic, Ralf Sasse, and Vincent Stettler. A for-            Vadim Lyubashevsky, John M. Schanck, Peter Schwabe,
+     mal analysis of 5g authentication. In Proceedings of             Gregor Seiler, and Damien Stehlé. CRYSTALS - Ky-
+     the 2018 ACM SIGSAC conference on computer and                   ber: A CCA-Secure Module-Lattice-Based KEM. In
+     communications security, pages 1383–1396, 2018.                  EuroS&P, pages 353–367. IEEE, 2018.
+
+ [9] David Basin, Ralf Sasse, and Jorge Toro-Pozo. The emv       [18] Jacqueline Brendel, Cas Cremers, Dennis Jackson, and
+     standard: Break, fix, verify. In 2021 IEEE Symposium             Mang Zhao. The provable security of ed25519: theory
+     on Security and Privacy (SP), pages 1766–1781. IEEE,             and practice. In 2021 IEEE Symposium on Security and
+     2021.                                                            Privacy (SP), pages 1659–1676. IEEE, 2021.
+
+                                                                 [19] Jacqueline Brendel, Rune Fiedler, Felix Günther, Chris-
+[10] Karthikeyan      Bhargavan, Abhishek Bichhawat,
+                                                                      tian Janson, and Douglas Stebila. Post-quantum asyn-
+     Quoc Huy Do, Pedram Hosseyni, Ralf Küsters, Guido
+                                                                      chronous deniable key exchange and the signal hand-
+     Schmitz, and Tim Würtele. Dy*: A modular symbolic
+                                                                      shake. In Goichiro Hanaoka, Junji Shikata, and Yohei
+     verification framework for executable cryptographic
+                                                                      Watanabe, editors, Public-Key Cryptography - PKC
+     protocol code. In 2021 IEEE European Symposium on
+                                                                      2022 - 25th IACR International Conference on Prac-
+     Security and Privacy (EuroS&P), pages 523–542. IEEE,
+                                                                      tice and Theory of Public-Key Cryptography, Virtual
+     2021.
+                                                                      Event, March 8-11, 2022, Proceedings, Part II, volume
+                                                                      13178 of Lecture Notes in Computer Science, pages 3–
+[11] Karthikeyan Bhargavan, Bruno Blanchet, and Nadim
+                                                                      34. Springer, 2022.
+     Kobeissi. Verified models and reference implemen-
+     tations for the TLS 1.3 standard candidate. In IEEE         [20] Jacqueline Brendel, Marc Fischlin, Felix Günther, Chris-
+     Symposium on Security and Privacy (S&P’17), pages                tian Janson, and Douglas Stebila. Towards post-quantum
+     483–503, Los Alamitos, CA, May 2017. IEEE Computer               security for signal’s X3DH handshake. In Orr Dunkel-
+     Society Press.                                                   man, Michael J. Jacobson Jr., and Colin O’Flynn, editors,
+                                                                      Selected Areas in Cryptography - SAC 2020 - 27th In-
+[12] Karthikeyan Bhargavan, Charlie Jacomme, Franziskus               ternational Conference, Halifax, NS, Canada (Virtual
+     Kiefer, and Rolfe Schmidt. Cryptoverif and proverif              Event), October 21-23, 2020, Revised Selected Papers,
+     models, 2024. https://github.com/Inria-Prose                     volume 12804 of Lecture Notes in Computer Science,
+     cco/pqxdh-analysis/tree/2e676a009471f370d                        pages 404–430. Springer, 2020.
+     bbfad3ac7ab5d7d9518ab57.
+                                                                 [21] Katriel Cohn-Gordon, Cas Cremers, Benjamin Dowling,
+[13] Alexander Bienstock, Jaiden Fairoze, Sanjam Garg,                Luke Garratt, and Douglas Stebila. A formal security
+     Pratyay Mukherjee, and Srinivasan Raghuraman. A                  analysis of the signal messaging protocol. Journal of
+     more complete analysis of the signal double ratchet algo-        Cryptology, 33:1914–1983, 2020.
+     rithm. In Annual International Cryptology Conference,
+     pages 784–813. Springer, 2022.                              [22] Cas Cremers, Alexander Dax, and Niklas Medinger.
+                                                                      Keeping up with the kems: Stronger security notions
+[14] Bruno Blanchet. Modeling and verifying security pro-             for kems. Cryptology ePrint Archive, 2023.
+     tocols with the applied pi calculus and proverif. Foun-
+                                                                 [23] Cas Cremers, Caroline Fontaine, and Charlie Jacomme.
+     dations and Trends® in Privacy and Security, 1(1-2):1–
+                                                                      A logic and an interactive prover for the computational
+     135, 2016.
+                                                                      post-quantum security of protocols. In 2022 IEEE Sym-
+                                                                      posium on Security and Privacy (SP), pages 125–141.
+[15] Bruno Blanchet and Charlie Jacomme. Post-quantum
+                                                                      IEEE, 2022.
+     sound CryptoVerif and verification of hybrid TLS and
+     SSH key-exchanges. In Proceedings of the 37th IEEE          [24] Cas Cremers, Charlie Jacomme, and Aurora Naska. For-
+     Computer Security Foundations Symposium (CSF’24).                mal analysis of session-handling in secure messaging:
+     IEEE Computer Society Press, 2024.                               Lifting security from sessions to conversations. In
+                                                                      Usenix Security, 2023.
+[16] Joppe Bos, Léo Ducas, Eike Kiltz, Tancrède Lepoint,
+     Vadim Lyubashevsky, John M Schanck, Peter Schwabe,          [25] Keitaro Hashimoto, Shuichi           Katsumata, Kris
+     Gregor Seiler, and Damien Stehlé. Crystals-kyber: a              Kwiatkowski, and Thomas Prest.           An efficient
+     cca-secure module-lattice-based kem. In 2018 IEEE Eu-            and generic construction for signal’s handshake
+     ropean Symposium on Security and Privacy (EuroS&P),              (X3DH): post-quantum, state leakage secure, and
+     pages 353–367. IEEE, 2018.                                       deniable. J. Cryptol., 35(3):17, 2022.
+
+
+
+USENIX Association                                                                  33rd USENIX Security Symposium        483
+[26] Charlie Jacomme, Elise Klein, Steve Kremer, and          [39] Keita Xagawa. Anonymity of nist pqc round 3 kems.
+     Maïwenn Racouchot. A comprehensive, formal and                In Annual International Conference on the Theory and
+     automated analysis of the edhoc protocol. In USENIX           Applications of Cryptographic Techniques, pages 551–
+     Security’23-32nd USENIX Security Symposium, 2023.             581, 2022.
+[27] Nadim Kobeissi, Karthikeyan Bhargavan, and Bruno
+     Blanchet. Automated verification for secure messag-      A    Formal Symbolic security Theorems
+     ing protocols and their implementations: A symbolic
+     and computational approach. In 2017 IEEE European        We proved in P ROVERIF a set of three queries, modeling:
+     symposium on security and privacy (EuroS&P), pages         1. the exhaustive case disjunction under which the key com-
+     435–450. IEEE, 2017.                                           puted by the responder Alex is secret;
+                                                                2. the exhaustive case disjunction under which the key com-
+[28] Ehren Kret and Rolfe Schmidt. The pqxdh key agree-             puted by the initiator Blake is secret;
+     ment protocol - diff between rev 1 and 2, September        3. the exhaustive case disjunction under which there is
+     2023. https://github.com/Inria-Prosecco/pq                     authentication.
+     xdh-analysis/blob/main/revision2/pqxdh-dif                  In P ROVERIF, the final correct and complete query we were
+     f-rev-1-to-2.pdf.                                        able to prove for the secrecy of the responder key is:
+[29] Ehren Kret and Rolfe Schmidt. The pqxdh key agree-       query A,B:client, spk:point, pqpk:kempub, sk:symkey,
+     ment protocol - revision 1, September 2023. Archive:           i,j:time;
+                                                                event(AlexOK(A,B,spk,pqpk,ts))@i
+     https://github.com/Inria-Prosecco/pqxdh-a
+                                                                  =⇒ not(attacker(sk))
+     nalysis/blob/main/revision1/pqxdh-rev1.pdf.                       | (CompromisedIK(B)@j
+[30] Ehren Kret and Rolfe Schmidt. The pqxdh key agree-                      & (j<i
+                                                                                | (event(CompromiseSPK(B,spk))
+     ment protocol - revision 2, September 2023. Archive:
+                                                                                    & (event(CompromisePQPK(B,pqpk))
+     https://github.com/Inria-Prosecco/pqxdh-a
+                                                                                      | event(BrokenKEM))
+     nalysis/blob/main/revision2/pqxdh-rev2.pdf.                                    )
+[31] A. Langley, M. Hamburg, and S. Turner. Elliptic curves                     )
+                                                                           )
+     for security. RFC 7748, RFC Editor, January 2016.
+                                                                        | (event(BrokenDH())@j
+[32] Moxie Marlinspike and Trevor Perrin. The X3DH Key                        & (j < i
+     Agreement Protocol, 2016.                                            | event(CompromisePQPK(B,pqpk))
+                                                                   | event(BrokenKEM)
+[33] Trevor Perrin and Moxie Marlinspike. The Double                              )
+     Ratchet Algorithm, 2016.                                                 )
+
+[34] Andreea-Ina Radu, Tom Chothia, Christopher JP New-         This can be translated as a security theorem detailing the
+     ton, Ioana Boureanu, and Liqun Chen. Practical emv       possible cases.
+     relay protection. In 2022 IEEE Symposium on Security     Theorem 7 (Symbolic Responder Secrecy). The key SKA
+     and Privacy (SP), pages 1737–1756. IEEE, 2022.           computed by the responder Alex is secret, unless:
+                                                                1. IKB was compromised before the completion of the key
+[35] Phillip Rogaway.       Authenticated-encryption with
+                                                                   exchange (this is to be expected, this is essentially a
+     associated-data. In Proceedings of the 9th ACM Confer-
+                                                                   malicious A case).
+     ence on Computer and Communications Security, pages
+                                                                2. IKB was compromised after the key exchange, as well as
+     98–107, 2002.
+                                                                   some SPKb , and either KEMs are broken or the corre-
+[36] P.W. Shor. Algorithms for quantum computation: dis-           sponding PQSPKB has been compromised (the attacker
+     crete logarithms and factoring. In Proceedings 35th           just need to send a malicious OPK here to be able to
+     Annual Symposium on Foundations of Computer Sci-              compute all the values).
+     ence, pages 124–134, 1994.                                 3. DH was broken before the key exchange (this is similar
+                                                                   to case 1).
+[37] Erik Thormarker. On using the same key pair for            4. DH was broken only after the key exchange, and either
+     ed25519 and an x25519 based kem. Cryptology ePrint            KEMs are fully broken or the PQSPKB (similar to case
+     Archive, 2021.                                                2) .
+[38] Dominique Unruh. Quantum relational hoare logic.            All those cases appear normal, and it is in all the possible
+     Proceedings of the ACM on Programming Languages,         compromise cases that still maintain security that we find the
+     3(POPL):1–31, 2019.                                      classical security notions to be implied.
+
+
+
+484   33rd USENIX Security Symposium                                                                   USENIX Association
+   Remark that using an OPK does not change anything on the            of the insecure case, and is thus not enough to break the
+responder side, as they are not authenticated. But of course,          security.
+compromising the OPK makes it so that the honest responder          3. resistance to key compromise impersonation: implied
+will never receive and answer the message.                             by Theorem 8, as authentication holds even if IKB was
+   We can also prove some form of authentication and data              compromised.
+agreement:                                                          4. session independence: implied by Theorems 7 and 9,
+                                                                       where we can see that one must compromise precisely
+Theorem 8 (Symbolic authentication). Whenever an initiator             ephemerals secrets of the target session to break it, and
+Blake accepts (resp. with or without an OPK), then, there ex-          thus that leaking the ephemeral keys of other sessions
+ists a responder Alex that also accepted (resp. with or without        does not impact security.
+the same OPK) with the same SPKB and PQSPKB , unless:               5. resistance to “harvest now decrypt later”: all three theo-
+  1. IKA was compromised before the exchange ( allows the              rems give us that just breaking DH after completion is
+      impersonation of Alex).                                          not enough, and that additional compromises are always
+  2. Some SPKB was compromised before the exchange                     needed.
+      (knowing SPKB allows to impersonate A).
+  3. DH has been broken before the exchange.
+                                                                    B   Full protocol description
+  The second compromise case here is the most interesting
+one. Indeed, it means that Signal is suceptible to a form of
+ephemeral key compromise impersonation: compromising
+the ephemeral SPKB secret of Blake allows to impersonate
+anybody to Blake. This is natural with the design of Signal,
+as Alex only authenticates by using a long term DH share
+combined with the SPKB .
+
+Theorem 9 (Symbolic Initiator Secrecy). The key SKB com-
+puted by the initiator Blake is secret, unless:
+  1. IKA was compromised before the communication. (this
+     allows a full impersonation of Alex)
+  2. Some SPKB was compromised before the communica-
+     tion. (more surprisingly, but inevitably, this allows a full
+     impersonation of any Alex)
+  3. IKB , SPKB and PQSPKB are compromised after the com-
+     munication, and either no OPK was used or it was com-
+     promised. (all secret material of A is leaked here, so this
+     is a very natural case)
+  4. IKB and SPKB are compromised after the communication,
+     and KEMs are broken, and either no OPK was used or it
+     was compromised. (similar to 3)
+  5. DH was broken before the exchange (naturally breaks
+     everything)
+  6. DH was broken after the exchange, and the PQSPKB
+     used by the responder was compromised (similar to 3)
+  7. DH was broken after the exchange, and KEMs are broken
+     (similar to 5)
+
+   In contrast, the OPK now plays a role and increases the
+security, and also need to be compromised in many cases.
+   Summing up the three theorems, we do have the higher
+level security properties mentioned in Theorem 1:
+  1. peer-authentication: directly implied by Theorem 8,
+     where authentication holds unless there is a compromise.
+  2. forward secrecy: implied by Theorems 7 and 9, where
+     we can see that compromising the identity key of any
+     party after the completion of a key exchange is not one
+
+
+
+USENIX Association                                                                   33rd USENIX Security Symposium         485
+                                    pk
+            Long term keys: IKsk
+                              B , IKA                                                                                  Long term keys: IKpk    sk
+                                                                                                                                         B , IKA
+                    B LAKE                                                   S ERVER                                            A LEX
+
+
+      Medium term keys:
+                 pk $
+      SPKsk       − DH.Keygen
+         B , SPKB ←
+                         pk $
+      PQSPKsk         − KEM.Keygen
+           B , PQSPKB ←
+
+
+      Short term keys:
+                 pk $
+      OPKsk       − DH.Keygen
+         B , OPKB ←
+                         ′pk $
+      PQSPK′Bsk , PQSPKB ←
+                         − KEM.Keygen
+
+                                 pk           pk                      pk
+                           OPKB , SPKB , sign(encodeEC(SPKB ), IKsk
+                                                                 B)
+
+                                      pk                              pk
+                           PQSPKB , sign(encodeKEM(PQSPKB ), IKsk
+                                                               B)
+
+                                      ′pk                             ′pk
+                           PQSPKB , sign(encodeKEM(PQSPKB ), IKsk
+                                                               B)
+                                                                                   (?OPKpk      pk              pk
+                                                                                        B ), SPKB , sigEC, PQSPKB , sigKEM
+
+
+                                                                                                          Verify signatures
+                                                                                                                   pk $
+                                                                                                          EKsk      − DH.Keygen
+                                                                                                            A , EKA ←
+                                                                                                                   $                            pk
+                                                                                                                 − KEM.encaps(PQSPKB )
+                                                                                                          CT, SS ←
+                                                                                                                           pk IKsk    pk EKsk        sk
+                                                                                                          DH1−3 = (SPKB ) A ∥(IKB ) A ∥(SPKpkB )
+                                                                                                                                                 EKA
+                                                                                                                                  pk EKsk
+                                                                                                          SKB = kdf(DH1−3 (?∥(OPKB )   A  )∥SS )
+                                                                                                          AD = IKApk ∥IKBpk
+                                              pk
+                                            EKA , id(SPKB ), (?id(OPKB )), id(PQSPKB ), CT , enc(”hello”, 0, AD, SKB )
+
+ Fetch secret keys from ids
+ SS = KEM.decaps(CT, PQSPKsk        B)
+              pk SPKsk      pk IKsk         SPKsk
+ DH1−3 = (IKA )      B ∥(EKA ) ∥(EKpk
+                                 B
+                                         A )
+                                               B
+                            pk OPK  sk
+ SKA = kdf(DH1−3 (?∥(EKA )          B  )∥SS )
+ Check if AD = IKApk ∥IKBpk
+ Decrypt and check aead
+ Delete used short term keys
+
+
+
+
+                                                    Figure 4: The PQXDH protocol, revision 1.
+ It is exactly the X3DH protocol, with additional KEM computations, highlighted with a light gray background. Question marks denote
+                                                        optional elements.
+
+
+
+
+486    33rd USENIX Security Symposium                                                                                       USENIX Association
+

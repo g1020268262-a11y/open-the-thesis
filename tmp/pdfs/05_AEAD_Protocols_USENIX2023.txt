@@ -1,0 +1,1188 @@
+           Automated Analysis of Protocols that use Authenticated Encryption:
+              How Subtle AEAD Differences can impact Protocol Security
+
+                            Cas Cremers1 , Alexander Dax1,3 , Charlie Jacomme2 , and Mang Zhao1,3
+                                  1 CISPA Helmholtz Center for Information Security, Germany
+                                                        2 Inria Paris, France
+                                                       3 Saarland University
+
+
+
+
+                         Abstract                                         While AEADs are ubiquitous in modern secure commu-
+Many modern security protocols such as TLS, WPA2, Wire-                nications, there is no commonly agreed “strong” security
+Guard, and Signal use a cryptographic primitive called Au-             notion that they should satisfy. In fact, the current land-
+thenticated Encryption (optionally with Authenticated Data),           scape of security notions for AEADs is rather chaotic: there
+also known as an AEAD scheme. AEAD is a variant of sym-                are many proposed frameworks and security notion vari-
+metric encryption that additionally provides authentication.           ants [2–4, 8–10, 16, 18, 26, 31, 32, 43, 51, 55]. For some of
+While authentication may seem to be a straightforward ad-              these notions, their implication relations are known [8], but
+ditional requirement, it has in fact turned out to be complex:         many of them are hard to compare for technical reasons.
+many different security notions for AEADs are still being pro-            In reality, there are good examples of recent protocol
+posed, and several recent protocol-level attacks exploit subtle        attacks that exploit subtle properties of concrete AEAD
+behaviors that differ among real-world AEAD schemes.                   schemes, such as [26, 33, 42]. These have all been found
+   We provide the first automated analysis method for pro-             through manual inspection of the protocol and knowledge of
+tocols that use AEADs that can systematically find attacks             the particular AEAD scheme, such as exploiting the reuse of
+that exploit the subtleties of the specific type of AEAD used.         a nonce, a number meant to be used only once. We would
+This can then be used to analyze specific protocols with a             like to formally prove the absence of such attacks: i.e., that
+fixed AEAD choice, or to provide guidance on which AEADs               a protocol (e.g., TLS, WhatsApp, WPA2), when instantiated
+might be (in)sufficient to make a protocol design secure. We           with a specific AEAD (e.g., AES-GCM), satisfies a desired
+develop generic symbolic AEAD models, which we instanti-               security notion. At a methodological level, these attacks can
+ate for the Tamarin prover. Our approach can automatically             be hard to model because they require a methodology that is
+and efficiently discover protocol attacks that could previously        not only precise enough to capture AEAD details (e.g. impact
+only be found using manual inspection, such as the Salaman-            of nonce reuse) but also scales well enough to allow for mod-
+der attack on Facebook’s message franking, and attacks on              eling the often complex possible executions of a protocol that
+SFrame and YubiHSM. Furthermore, our analysis reveals                  determine whether such attack requirements can be met.
+undesirable behaviors of several other protocols.                         In this work, we develop the first systematic methodol-
+                                                                       ogy for the automated analysis of security protocols that can
+1   Introduction                                                       find attacks that leverage subtle behaviors of concrete AEAD
+                                                                       schemes, or show their absence. For our methodology, we
+Authenticated Encryption (AE) and Authenticated Encryp-                leverage the TAMARIN prover [45], a symbolic protocol anal-
+tion with Associated Data (AEAD) are some of the most                  ysis tool, which we augment with novel fine-grained models
+commonly used cryptographic building blocks. AEAD prim-                of AEAD primitives. This tool choice enables us to analyze
+itives are built from symmetric encryption primitives and              several non-trivial protocols. We also considered using tools
+augmented with authentication mechanisms. Their applica-               in the computational model (e.g., [6, 7, 13]), but these cur-
+tions include the vast majority of encrypted internet data, such       rently do not yet scale to the complexity of the protocols we
+as in TLS, WPA2 from IEEE 802.11 (WiFi), WireGuard, and                are interested in, and cannot find attacks.
+by messaging apps such as Signal or WhatsApp. For example,                One of the challenges in developing our models is that they
+in TLS, TLSCiphertext is constructed from an AEAD applied              require finding middle ground between theoretical security
+to a header and payload: both are authenticated, but only the          notions, weaknesseses exploited in practice, and suitability
+payload is encrypted, and the plaintext header includes the            for automated analysis. We identify the core theoretical and
+content type and the ciphertext length.                                practical concerns of AEADs, and use these to develop our
+
+
+                                                                   1
+generic symbolic AEAD models. We notably identify how the                 The efficient combination of these constructions has proven
+collision resistance of AEAD is a central issue of their design:       to be surprisingly intricate. In standard encryption it is de-
+we illustrate how a lack of it leads to multiple attack classes,       sirable that if Alice encrypts the same message twice, the
+and how satisfying collision resistance implies that many ex-          attacker cannot tell this from the ciphertexts. This property is
+isting security notions are met. In our protocol case studies,         typically achieved by ensuring that when encrypting the next
+we rediscover previously reported attack classes, such as ac-          message, some data x is integrated that was not used before,
+countability or authentication, but also identify a new attack         ensuring uniqueness of the ciphertext. As we will see later,
+class concerning content agreement in group messaging sce-             this sometimes fails for various reasons, causing some x to be
+narios: can a dishonest group member send a single message             re-used. Intuitively, we would hope that while the attacker is
+that will be interpreted differently by multiple parties?              now able to detect message re-encryption, there should not be
+                                                                       any further negative consequences. For some provably secure
+                                                                       AEADs, it turns out that the situation is worse.
+Contributions Our main contributions are the following:
+                                                                          Furthermore, much like symmetric encryption, AEADs in
+  • We develop the first systematic automated methodology
+                                                                       real-world deployments typically construct and send cipher-
+    for analyzing security protocols that takes the subtle
+                                                                       text incrementally. To start decrypting partial ciphertexts as
+    properties of specific AEAD instantiations into account.
+                                                                       soon as possible, the syntax or API of some AEADs allows to
+  • In case studies, we show our methodology effectively
+                                                                       decouple decryption from the verification of authentication,
+    rediscovers known attacks on several protocols, includ-
+                                                                       which can be helpful but also cause problems elsewhere.
+    ing YubiHSM [42], Facebook’s Message Franking [26],
+                                                                          Historically, Authenticated Encryption with Associated
+    and SFrame [33]. We also rediscover a theoretical attack
+                                                                       Data (AEAD) was introduced by Rogaway [51] to entwine
+    variant on Facebook’s Message Franking first mentioned
+                                                                       privacy and authenticity for both messages and headers in a
+    in [31]. Moreover, our analysis uncovers unexpected
+                                                                       single and compact mode. The definition of AEAD is given in
+    behavior in WebPush [56], Whatsapp Group Messag-
+                                                                       the nonce-based pattern, where the nonce is named after the
+    ing [59], and Scuttlebutt [54].
+                                                                       number that are supposed to be used only once. The nonce-
+  • We formally prove the missing or conjectured relations
+                                                                       based AEADs are expected to relax the security requirements
+    between existing AEAD security notions w.r.t. collision
+                                                                       of the randomized or counter-based pattern – ensuring no
+    resistance, completing the picture in the domain.
+                                                                       reuse of the nonce during the encryption is sufficient for
+We provide the full formal TAMARIN models and analysis                 privacy and authenticity. Moreover, Bellare and Hoang [9]
+scripts at [1].                                                        initialized the study on binding keys and other optional inputs
+                                                                       to the ciphertexts.
+                                                                          In this section, we first recall the formal syntax of AEADs
+Overview We first give background on AEADs in Section 2.
+                                                                       and the canonical privacy and integrity definitions in Sec-
+We build the foundations for our methodology by revisiting
+                                                                       tion 2.1. In Section 2.2, we review the main attacks on pro-
+the AEAD landscape and real-world attack patterns in Sec-
+                                                                       tocols based on subtle AEADs behaviors and weaknesses.
+tion 3, and prove some missing relations between AEAD
+                                                                       In Section 2.3, we summarize and classify the main AEAD
+notions. We then develop our symbolic modeling and analysis
+                                                                       frameworks in the literature.
+approach in Section 4. We evaluate our approach on several
+protocol case studies in Section 5. We discuss limitations in
+Section 6 and describe further related work in Section 7. We           2.1    Formal AEAD syntax and requirements
+conclude in Section 8.
+   We give all proofs in the full version [20].                        Notations. We consider that all algorithms defined in this
+                                                                       paper are parameterized implicitly by the security parameter.
+                                                                       Let s ←$ S denote sampling a variable s uniformly at random
+2   Background on AEADs and protocol attacks                           from a set S. Let x ←$ X denote the execution of a probabilistic
+                                                                       algorithm X followed by assigning the output to a variable
+The modern approach to protecting privacy and authenticity             x. We write x ← X if the algorithm X is deterministic. Let ⊥
+of messages is to use authenticated encryption. This primi-            denote an special error symbol that is not included in any set
+tive evolved as a variant of symmetric encryption that highly          in this paper. We use _ to denote a variable that is irrelevant.
+efficiently offers two additional properties that are useful in           In the presentation of this work, we focus on the defini-
+real-world applications: authentication of the encrypted data,         tion of nonce-based AEADs. The main reason, besides re-
+and concurrent authentication of some plaintext data. One              ducing complexity, is that randomness- and counter-based
+could in theory achieve this by using a combination of sym-            AEADs can be cast as instances of nonce-based AEADs.
+metric encryption and MACs, but AEADs are much more                    Looking ahead, all our symbolic models will cover nonce-
+efficient and ensure the authenticated part is strictly bound to       based AEADs and can then trivially be used to model ran-
+the encrypted-and-authenticated part.                                  domized or nonce-based AEADs.
+
+
+                                                                   2
+Definition 1 ( [51]). Let Key, Nonce, Header, Message,                             the underlying AEADs need an evolution to meet stronger
+Ciphertext respectively denote the space of keys, nonces,                          security guarantees. We identify six main classes of these
+headers (aka. associated data), messages, and ciphertexts.                         protocol attacks that have occurred in the wild and briefly
+An authenticated encryption with associated data scheme                            describe their high-level requirements.
+AEAD = (KGen, Enc, Dec) is a tuple of algorithms where                             A1 Nonce reuse attacks - While nonces are expected to be
+   • KGen the key generation algorithm outputs a symmetric                         used only once, this can fail in practice for three main reasons.
+     key k ∈ Key, i.e., k ←$ KGen().                                               First, protocol designs might aim to establish nonces, but their
+   • Enc the encryption algorithm inputs a key k ∈ Key, a                          complex state machines may hide edge cases in which they
+     nonce N ∈ Nonce, a header H ∈ Header, and a message                           are in fact reused, as in e.g., WPA2 [57]. Second, the gener-
+     m and (deterministically) outputs a ciphertext c, i.e., c ←                   ation of nonces might involve external sources, which may
+     Enc(k, N, H, m).                                                              be unreliable, e.g., Yubikey [42] or Trustzone [55]. Third,
+   • Dec the decryption algorithm inputs a key k ∈ Key, a                          implementations may be flawed. For example, the Zerologon
+     nonce N ∈ Nonce, a header H ∈ Header, and a cipher-                           attack [62] notably exploited the fact that the nonce underly-
+     text c ∈ Ciphertext and deterministically outputs a mes-                      ing the AES-CBF8 mode in Microsoft Netlogon protocol is
+     sage m ∈ Message ∪ {⊥}, i.e., m ← Dec(k, N, H, c).                            a constant string of zero bits. The encryption of a block of
+  Over such schemes, the N, H and ciphertext c need to be                          zero bits equals to 016 with probability 1/256 for any key k,
+sent over the network1 , and the correctness of the scheme                         breaking the authentication of windows servers.
+requires that the decryption of a ciphertext with the same                         A2 Padding oracle attacks [58] - Many AEADs and sym-
+parameters N, H, k indeed returns the plaintext. We assume                         metric encryption schemes are constructed from block ciphers
+that the decryption with inputs outside the corresponding                          and require the length of input messages to be multiple of
+spaces must output ⊥.                                                              a fixed value. Messages whose length is not a multiple are
+  The two core security guarantees are integrity and privacy.                      extended before encryption using a so-called padding scheme.
+                                                                                   These can enable plaintext recovery attacks if the attacker has
+Definition 2 (Privacy [51]). We say an AEAD =                                      a way to determine if a ciphertext is correctly padded or not,
+(KGen, Enc, Dec) is ε-IND$-CPA secure, if the below defined                        e.g., through timing leaks or error messages. Padding oracle
+                                           $-CPA
+advantage of any attacker A against ExprIND
+                                        AEAD     experiment                        attacks have found on many protocols, including SSL [17],
+in Fig. 1 is bounded by:                                                           IPSec [25], and GPG [47].
+                                                                                   A3 SSH fragmentation attacks [5] - SSH was designed
+           $-CPA                $-CPA            1                                 for securing Internet traffic over the unstable channel, where
+     AdvIND
+        AEAD     := | Pr[ExprIND
+                             AEAD     (A ) = 1] − | ≤ ε
+                                                 2                                 ciphertext blocks in a packet might get lost. The length of a
+                                                                                   SSH packet is encrypted in its first block. If the number of
+Definition 3 (Integrity [51]). We say an AEAD = (KGen,                             delivered blocks is less than the length decrypted from the
+Enc, Dec) is ε-CTI-CPA secure, if the below defined ad-                            first ciphertext block, no ciphertext integrity is executed.
+vantage of any attacker A against ExprCTI -CPA
+                                       AEAD    experiment                             If an attacker can inject the first ciphertext block and ob-
+in Fig. 2 is bounded by:                                                           serve the error message reported by the SSH connection, then
+                                                                                   the plaintext of the transmitted ciphertext can be recovered.
+                 -CPA               -CPA
+          AdvCTI
+             AEAD     := Pr[ExprCTI
+                                AEAD (A ) = 1] ≤ ε                                 A4 Partitioning oracle attacks [43] - Some real-world ap-
+                                                                                   plications do not sample the AEAD symmetric keys randomly
+   Both for integrity and privacy, we can define two security                      but simply pick users’ passwords. Thus, attackers might know
+variants, CTI-CCA and IND$-CCA, based on whether the at-                           a set of possible password candidates and perform brute-force
+tacker also has access to a decryption oracle during the exper-                    attacks. Even worse, if attackers have access to a partitioning
+iment, see e.g., the definition of the experiment for CTI-CCA                      oracle, which tells whether the password of a ciphertext be-
+in Fig. 2. We summarize the well-known relations in Fig. 3,                        longs to some known sets, then the password can be recovered
+with the corresponding theorems in the long version [20] .                         exponentially faster.
+                                                                                      In practice, attackers sometimes can obtain the partitioning
+2.2 Historical real-world protocol attacks ex-                                     oracle by observing the reply messages responding to a se-
+                                                                                   lected ciphertext. This causes the vulnerability of applications
+    ploiting AEADs
+                                                                                   in the real world, such as Shadowsocks [43].
+Beside the well-studied privacy and integrity, some recent                         A5 Salamander attack [26] - The end-to-end secure mes-
+attacks against practical application protocols suggest that                       saging provides high security against the surveillance of the
+    1 We stress that AEAD schemes can be used offline in practice, where
+                                                                                   server but potentially prevents the server from blocking the
+nonces and headers both are hidden from attackers’ view. However, this paper
+                                                                                   abusive messages. To mitigate this, Facebook invents a abuse
+focuses on a more common case where the attackers might have access to             report mechanism that allows each user to report the received
+the nonce and headers, e.g., which are transmitted over network.                   abusive messages from a claimed sender.
+
+
+                                                                               3
+ ExprIND$-CPA
+     AEAD     :                    ExprIND$-CCA
+                                       AEAD     :                       E NC(N, H, m):                               D EC(N, H, c):
+ 1    b ←$ {0, 1}                  1   b ←$ {0, 1}                      6 if (N, H, m, _) ∈ Lc                      13 if (N, H, _, c) ∈ Lc
+ 2    Lc ← 0/                      2   Lc ← 0/                          7     return ⊥                              14     return ⊥
+ 3    k ←$ KGen()                  3   k ←$ KGen()                      8 if b = 0                                  15 m ← Dec(k, N, H, c)
+ 4    b′ ←$ A E NC ()              4   b′ ←$ A E NC,D EC ()             9     c ← Enc(k, N, H, m)                   16 if m ̸= ⊥
+ 5    return Jb = b′ K             5   return Jb = b′ K                10 else c ←$ {0, 1}ℓ(|m|)                    17     Lc ← Lc ∪ {(N, H, m, c)}
+                                                                       11 Lc ← Lc ∪ {(N, H, m, c)}                  18 return m
+                                                                       12 return c
+
+                            Figure 1: IND$-CPA and IND$-CCA security for an AEAD = (KGen, Enc, Dec) scheme.
+
+
+
+ ExprCTI-CPA
+     AEAD :                                   ExprCTI-CCA
+                                                  AEAD :                                    E NC(N, H, m):
+ 1 Lc ← 0/                                    1 Lc ← 0/                                     7 c ← Enc(k, N, H, m)
+ 2 k ←$ KGen()                                2 k ←$ KGen()                                 8 Lc ← Lc ∪ {c}
+ 3 (N, H, c) ←$ A E NC ()                     3 (N, H, c) ←$ A E NC,D EC ()                 9 return c
+ 4 if c ∈ Lc                                  4 if c ∈ Lc                                   D EC(N, H, c):
+ 5     return 0                               5     return 0                               10 return Dec(N, H, c)
+ 6 return JDec(k, N, H, c) ̸= ⊥K              6 return JDec(k, N, H, c) ̸= ⊥K
+
+                              Figure 2: CTI-CPA and CTI-CCA security for an AEAD = (KGen, Enc, Dec) scheme.
+
+
+
+                                                                                    of AEADs have been designed in the past twenty years follow-
+                                                                                    ing the seminal work from [51]. Each of those variants come
+                                                                                    with their own flavors of properties like, e.g., integrity, con-
+                                                                                    fidentiality, nonce-misuse resistance, or robustness, leading
+                                                                                    to dozens of distinct security definitions. Furthermore, these
+                                                                                    AEAD variants differ in functionality, with some enabling e.g.
+                                                                                    ciphertext fragmentation or nonce-hiding. We categorize the
+                                                                                    main differences between distinct AEAD variants as follows:
+ Figure 3: The relation between integrity and privacy for AEAD.                     F1 does each ciphertext (or a part of it) bind to a set of its
+                                                                                    encryption inputs? This question motivates the study of a
+                                                                                    novel (compactly) committing AEAD (ccAEAD [20, Defini-
+   However, this mechanism turns out to be broken because                           tion 6] ) regime as well as various security properties, such as
+a malicious sender could send a single encrypted attachment                         collision resistance [20, Definition 9] , commitment [20, Def-
+that would decrypt to both an abusive message and an innocent                       inition 10] , sender binding [20, Definition 14] , and receiver
+message under two distinct keys.                                                    binding [20, Definition 15] [3, 9, 26, 31]. Roughly speak-
+A6 Sframe attack [33] - An AEAD scheme authenticates                                ing, the collision resistance prevents the collisions between
+the owners of a symmetric key of a ciphertext rather than                           AEAD encryption with different inputs. The commitment
+the sender’s identity. This is especially relevant for group                        ensures that each valid AEAD decryption indicates the agree-
+communication, where an AEAD cannot use the shared group                            ment on a subset of its encryption/decryption inputs. The
+key to authenticate the specific sender. To provide sender                          sender- and receiver binding properties are relevant in the
+authenticity in groups, while keeping low bandwidth cost, the                       abuse-reporting scenarios. While the sender binding allows
+IETF SFrame protocol v01 [49] requires senders to sign a                            every ccAEAD receiver to report abusive messages, the re-
+portion of the AEAD ciphertext using digital signatures.                            ceiver binding prevents malicious receivers from framing
+   Unfortunately, the sender identity authenticity of SFrame                        honest ccAEAD senders. We give their full definitions in the
+mechanism turns out to be broken, since the underlying AEAD                         long version [20] - motivated by A5.
+schemes, AES-CM-HMAC and AES-GCM, do not provide                                    F2 can we find collisions on valid decryption inputs for the
+collision resistance for the unsigned portion. This means, a                        same ciphertext? This question motivates the study of a novel
+malicious group member holding the symmetric key can forge                          property called robustness [2, 43]. Briefly speaking, robust-
+the unsigned portion of other group members’ ciphertexts.                           ness prevents attackers from having a single ciphertext de-
+                                                                                    crypt to multiple distinct valid messages on different inputs. -
+                                                                                    motivated by A4, A6.
+2.3      Theoretical AEAD frameworks
+                                                                                    F3 is the AEAD supporting fragmentation of the ciphertexts?
+Apart from the previously outlined classes of real-word at-                         That is, can we start decrypting chunks of data before having
+tacks linked to AEADs, on the theoretical side, many variants                       verified the whole ciphertext?
+
+
+                                                                                4
+F4 is the decryption atomic, or split into a decryption and an             • nonce-misuse resistance - this guarantees that using a
+integrity check? [8] - motivated by A2.                                       weak nonce twice or the same nonce for distinct message
+F5 is the AEAD nonce-hiding? That is, is the nonce explicitly                 does not lead to a compromise.
+needed for the decryption, or is it included and hidden inside             With respect to those core properties, we provide in Ta-
+the ciphertexts? [10, 18]                                               ble 1 the security and weaknesses of many widely deployed
+F6 is the AEAD nonce-misuse resistant? [32] Must a nonce                AEADs. In addition to the concrete constructions, we also pro-
+be used once strictly, or can repeat? - motivated by A1.                vide in this table the generic constructions of AEAD such as
+                                                                        Encrypt then Mac (EtM), whose security guarantees depend
+                                                                        on the concrete encryption and MAC algorithm instantiations.
+3     Generalizing real-world AEAD (in)security                         For the generic construction EtM, we distinguish two cases
+      for systematic analysis                                           based on whether the encryption and mac keys are related, e.g.
+                                                                        derived from k with a key derivation function, or unrelated,
+In this section we develop systematic generalizations of                e.g. simply the first and the second half of the input k.
+AEAD security and weaknesses, which form the foundation                    Notably, while all of AEADs in the table do provide in-
+of the symbolic models that we will design in Section 4.                tegrity and privacy (otherwise they would not be used), only
+   In the previous section we recalled attack classes and se-           some of them tolerate that a single nonce is reused twice for
+curity frameworks from the literature. However, these do                different messages. Moreover, we can also observe that the
+not exist within a single systematic framework, and basing              picture for collision-resistance is very disparate and many
+our symbolic modeling on them would lead to incompara-                  deployed schemes do not meet it.
+ble and ad-hoc models. For our more systematic approach,                   The nonce-misuse, privacy, and integrity properties are now
+we first identify the core properties of concrete real life             well-understood in the community. In contrast, the collision
+AEAD schemes that lead to the attacks: privacy and integrity,           part is more nascent: there are multiple variants for it on
+collision-resistance, and nonce-misuse resistance. We show              the security notions side, and in practice the concrete weak-
+the relevance of these four points by:                                  nesses have not been systematized. In this section, we carry
+   • providing in Table 1 the security and weaknesses of                on clarifying the theoretical and practical implications of
+      many widely deployed AEADs with respect to those                  collision-resistance of AEADs.
+      core properties;
+   • illustrating how collision resistance theoretically allows
+                                                                        3.2 Generalizing AEAD collision resistance
+      covering notions from F1 and F2 in Section 3.2; and
+   • summarizing the concrete existing collision capabilities               and relations
+      for deployed AEADs.                                               We consider the CMT-4 definition in [9] as a natural definition
+In particular, we identify the collision resistance property as         for full collision resistance and recall it below. Roughly speak-
+a central concern, which we then investigate first from the             ing, full collision resistance means that each AEAD ciphertext
+theoretical and then the practical point of view.                       can only be computed by unique input. While this appears as
+                                                                        a strong property, its absence may introduce surprising behav-
+                                                                        iors for some protocols. Looking forward, this is illustrated
+3.1    Core properties
+                                                                        by some known attacks or our case-studies, which seem to
+Stepping back from the many theoretical definitions, we iden-           indicate that despite its strength, full collision resistance is a
+tify three main causes for the protocol attacks:                        meaningful and desirable notion.
+    • A1 comes from a misuse of nonces.                                 Definition 4 (Full Collision Resistance). We say an AEAD =
+    • A2 and A3 from a decryption misuse, where the decryp-             (KGen, Enc, Dec) has ε-full collision resistance (or ε-full-CR
+      tion is not atomic but performed in two steps, in which           ), if the below defined advantage of any attacker A against
+      case we lose the integrity and privacy guarantees.                the Exprfull -CR
+                                                                                  AEAD experiment in Fig. 4 is bounded by
+    • A4, A5, and A6 actually all stem from a lack of collision-
+                                                                                      full-CR               -CR
+      resistance                                                                   AdvAEAD    := Pr[Exprfull
+                                                                                                        AEAD (A ) = 1] ≤ ε
+   This leads us to summarizing the concrete security guaran-
+tees for AEADs in three categories:
+    • privacy and integrity - the core guarantees that we               Relationship with existing frameworks It turns out that
+      defined previously, and are expected to be met by all             this notion of collision resistance, while straightforward, is
+      AEADs. This is what is lost under decryption misuse.              enough to cover in practice multiple notions of the literature
+    • collision-resistance - this guarantee hinders attackers           from [3, 9, 29, 31, 43]. Informally, these notions are:
+      from coming up with collisions over the output of Enc,               • tidyness - for a fixed key, is the encryption function the
+      i.e. find two distinct sets of inputs ⃗i1 and ⃗i2 such that            inverse of the decryption one? It implies that collisions
+      Enc(⃗i1 ) = Enc(⃗i2 ).                                                 over encryptions or decryptions are equivalent.
+
+
+                                                                    5
+            Concrete AEAD                               Integrity and Privacy                         Full Collision Resistance      Nonce Misuse Resistance
+            XSalsa20-Poly1305                           •                                             ✗ [3]                          ✗ Xor of plaintexts
+            AES-GCM                                     ✓ [34, 44]                                    ✗ [26]                         ✗ Forgeability + xor of plaintexts
+            ChaCha20-Poly1305                           ✓ [50]                                        ✗ [3]                          ✗ Xor of plaintexts
+            OCB3                                        ✓ [12, 41]                                    ✗ [3]                          ✗ Forgeability + equality of blocks
+            EtM (unrelated keys)                        ✓ [51]                                        ✗ [31]4                        ✗ Encryption dependent
+            AES-CCM                                     ✓ [30, 37]                                    •                              ✗ Xor of plaintexts
+            AES-EAX                                     ✓ [11, 46]                                    •                              ✗ Xor of plaintexts
+            EtM (related keys)                          ✓ [51]                                        ✓ [31]                         ✗ Encryption dependent
+            CAU-C4                                      ✓ [9]                                         ✓ [9]                          ✗ Forgeability + Xor of plaintexts
+            AES-GCM-SIV                                 ✓ [32, 35]                                    ✗ [3]                          ✓ [32]
+            CAU-SIV-C4                                  ✓ [9]                                         ✓ [9]                          ✓ [9]
+                     ✓ : proven in the cited work(s).          • : we conjecture that this holds, but do not know of a proof.
+                                      ✗ : does not hold, with reference or explanation of counterexample.
+
+Table 1: AEADs (in)-security guarantees: Integrity and Privacy refers to IND$-CPA and CTI-CPA. Full Collision Resistance refers to
+Definition 4. For Nonce Misuse Resistance we indicate the potential impact of reusing nonces if the AEAD scheme does not have this property.
+
+
+Exprfull-CR
+    AEAD :
+                                                                                                                     , where X ⊆ (k, N, H, m) denotes the degree of robust-
+                                                                                                                     ness. Moreover, we prove that X-FROB is equivalent to
+                                              
+1    (k1 , N1 , H1 , m1 ), (k2 , N2 , H2 , m2 ) ←$ A ()
+2    if ⊥ ∈ {k1 , N1 , H1 , m1 , k2 , N2 , H2 , m2 } or (k1 , N1 , H1 , m1 ) = (k2 , N2 , H2 , m2 )                  X-IBC in [20, Theorem 6] .
+3       return 0                                                                                                   • key committing KC security [3] - is any attacker able
+4    c1 ← Enc(k1 , N1 , H1 , m1 ), c2 ← Enc(k2 , N2 , H2 , m2 )
+5    return Jc1 = c2 K                                                                                               to compute a ciphertext that decrypts correctly under
+                                                                                                                     different keys but same nonce? In this paper, we recall
+    Figure 4: full-CR security for an AEAD = (KGen, Enc, Dec).                                                       the KC definition in [20, Definition 13] and show that
+                                                                                                                     X-FROB with k ∈ X implies KC, while the reverse does
+                                                                                                                     not hold, in [20, Theorem 7] .
+                                                                                                                   • multi-key collision resistance (MKCR) [43] - is any at-
+    • commitment (CMT-l and CMTD-l for l ∈ {1, 3, 4} [9])
+                                                                                                                     tacker able to compute a ciphertext that decrypts cor-
+      - can we find collisions either over the encryption or
+                                                                                                                     rectly under multiple keys but same nonce and header?
+      the decryption, with different parts of the inputs being
+                                                                                                                     The MKCR is parameterized by the number of distinct
+      allowed to stay fixed based on l? In order to capture more
+                                                                                                                     keys κ ≥ 2. In this paper, we focus on the simplified
+      variants in this property class that are not included in [9],
+                                                                                                                     case where κ = 2. We recall the MKCR definition in
+      in this paper we rename CMT-l to collision resistance
+                                                                                                                     [20, Definition 13] and show that KC implies the simpli-
+      (X-CR) and CMTD-l to input bound ciphertexts (X-IBC),
+                                                                                                                     fied MKCR, while the reverse does not hold, in [20, The-
+      where X ⊆ (k, N, H, m)2 denotes the inputs that a AEAD
+                                                                                                                     orem 7] .
+      scheme commits to. We recall the definitions of X-CR
+                                                                                                                   • receiver binding (r-BIND) [31] - is any attacker able
+      and X-IBC respectively in [20, Definition 9] and [20,
+                                                                                                                     to compute a ciphertext that can be verified under the
+      Definition 10] and their relations in [20, Theorem 3] .
+                                                                                                                     different header and message? This notion was initially
+      In particular, the full-CR in Definition 4 is identical to
+                                                                                                                     defined for a variant of compactly committing AEAD
+      (k, N, H, m)-CR in [20, Definition 9] 3 .
+                                                                                                                     (ccAEAD), and showed how it can be instantiated for
+    • full robustness (FROB [29]) and even fuller robustness
+                                                                                                                     instance with an Encrypt then Mac construction4 . Note
+      (eFROB [31]) - is any attacker able to compute a cipher-
+                                                                                                                     that [31] also introduces how to transform any AEAD
+      text that decrypts correctly under two distinct inputs?
+                                                                                                                     to ccAEAD by a “traditionally committing encryption"
+      This notion was initially defined for randomized AEADs.
+                                                                                                                     approach (ccAEAD[AEAD]). In this paper, we recall the
+      In this paper, we extend the robustness notions FROB
+                                                                                                                     r-BIND definition in [20, Definition 15] and show its
+      and eFROB for randomized AEADs to a unified notion
+                                                                                                                     relations with other security notions (in this list) in [20,
+      X-FROB for nonce-based AEADs in [20, Definition 12]
+                                                                                                                     Theorem 8] and [20, Theorem 9] .
+   2 Here, we slightly abuse notation and use (·) to denote a set. Thus, by
+                                                                                                                   We provide the full relations between the above notions in
+X ⊆ (k, N, H, m) we mean that X is a subset of the set (k, N, H, m). For a
+single element set, we sometimes also omit the parenthesis and regard it as a
+single element. For instance, we write k ∈ X ⇔ (k) ⊆ X.                                                             4 [31] proposes to use HMAC-SHA256 to instantiate a keyed ran-
+   3 In [20, Theorem 4] we will show that (k, N, H, m)-CR implies all vari-                                      dom oracle, which is technically false without an additional assumption,
+ants, which motivated our choice to abbreviate (k, N, H, m)-CR to full-CR.                                       as HMAC(k, m) = HMAC(H(k), m) whenever k is bigger than 256 bits.
+
+
+                                                                                                             6
+the theorem below, which is illustrated in Fig. 5. We give the                3.3    Collision attacks on deployed AEADs
+detailed proofs in the longer version [20] . While some of
+                                                                              In general, any kind of collision between two ciphertexts can
+the relations were conjectured before ( [9]), we are the first to
+                                                                              lead to a security issue, and we will advocate that general
+provide the full proofs, as well as provide generalizations of
+                                                                              use AEADs should be fully resistant to collisions. However,
+some notions to enable a comparison.
+                                                                              many popular deployed AEADs do not meet the full colli-
+                                                                              sion resistance, as shown in Table 1. Below, we recall the
+Theorem (Informal). For any AEAD scheme, we have that
+                                                                              known attacks against various kinds of collision resistances
+ 1. X-FROB implies X-CR for any X ⊆ (k, N, H, m). If
+                                                                              of different AEAD schemes in the literature.
+    AEAD is tidy, the reverse also holds. See [20, Theo-
+    rem 3] .                                                                    1. r-BIND: [31] shows a generic attack against any EtM
+ 2. X-FROB/X-CR/X-IBC resp. implies X′ -FROB/X′ -CR/                               construction with unrelated keys by finding the second
+    X′ -IBC for any X′ ⊆ X ⊆ (k, N, H, m). See [20, Theorem                        key that causes collision by . This attack also applies
+    4] .                                                                           to real-world modes using Carter-Wegman MACs, e.g.,
+ 3. X-FROB and X-IBC are equivalent for any X ⊆                                    GCM and ChaCha20-Poly1305. [26] shows a concrete
+    (k, N, H, m). See [20, Theorem 5] .                                            attack against AES-GCM and OCB by finding the nonce
+ 4. k-FROB implies KC but not in reverse. See [20, Theo-                           that causes collision and sketches an faster attack by
+    rem 6] .                                                                       doing birthday attack on keys. Moreover, at the hand of
+ 5. KC implies MKCR but not in reverse. See [20, Theorem                           a corollary of Theorem 1 in [52], [26] claims that this
+    7] .                                                                           attack also applies to any so-called rate-1 AEAD, that is,
+ 6. (H, m)-FROB of AEAD implies r-BIND of                                          “one blockcipher call per block of message" [26]. This
+    ccAEAD[AEAD]. r-BIND of ccAEAD[AEAD] implies                                   potentially indicates the vulnerability of AES-GCM-SIV
+    X-FROB of AEAD for any X ⊆ (H, m). See [20, Theo-                              and ChaCha20-Poly1305 and any EtM constructions.
+    rem 8] .                                                                    2. KC: [3] extends the known attack in [26] against
+ 7. Neither KC nor MKCR of AEAD implies r-BIND of                                  AES-GCM to new proof-of-concept attacks against
+    ccAEAD[AEAD]. The reserve is same. See [20, The-                               several commonly used AEAD, including AES-GCM,
+    orem 9] .                                                                      ChaCha20-Poly1305, AES-GCM-SIV, and OCB3. This
+                                                                                   attack shows how to create ciphertext collision on two
+                                                                                   distinct keys. Then, [3] also shows that their new attacks
+                                                                                   also make impacts in some real-world scenarios, such as
+                                                                                   the binary polyglots setting.
+                                                                                3. MKCR: [43] shows a novel partitioning oracle attack
+                                                                                   that feasibly breaks the MKCR security with param-
+                                                                                   eter κ ≥ 2 of widely used AEAD schemes, including
+                                                                                   AES-GCM, AES-GCM-SIV, ChaCha20-Poly1305, and
+                                                                                   XSalsa20-Poly1305.
+                                                                                4. X-CR and X-IBC: [9] finds that all above attacks also
+                                                                                   break the k-CR and -IBC security of respective AEAD
+                                                                                   schemes. Thus, AES-GCM, AES-GCM-SIV, XSalsa20-
+Figure 5: The relation between collision related properties for AEAD               Poly1305, and ChaCha20-Poly1305 and OCB are all
+with key space Key. The black arrow → indicates the general impli-                 k-CR insecure, i.e., CMT-1-insecure in [9].
+cation. The purple dash-dotted arrow          indicates the implication
+for tidy AEAD. The orange dash-dot-dotted arrow               indicates
+the implication for ccAEAD[AEAD]. The X in the figure is a sub-               4     Symbolic models for automated verification
+set of (k, N, H, m), i.e., X ⊆ (k, N, H, m). The theorems highlighted
+with red color are claimed or proven in other papers. The theorems            We next describe how, using the generalizations we devel-
+highlighted with green color are part of our third contribution.              oped in the previous section, to develop symbolic models for
+                                                                              AEADs that encompass many of the essential weaknesses
+   Note that [20, Theorem 3] was proven in [9]. [20, Theo-                    from Section 2.2. For each essential weakness, we will de-
+rem 6] and [20, Theorem 8] were respectively claimed in [9]                   velop a specific model that gives the attacker the power to use
+and [31] without giving any proofs. Proofs for [20, Theorems                  the given weakness, and analyzing a protocol with those weak-
+4,5,7 and 9] are part of our third contribution. Recall that we               nesses enabled will then allow us to automatically find attacks
+have (k, N, H, m)-CR = full-CR in this figure. This theorem                   on protocols that may rely on subtle AEAD weaknesses.
+indicates that the full collision resistance implies all other                   Our models cover:
+existing notions in this figure under the tidyness assumption,                   • collisions Coll- covering A4, A5, A6, and definitions
+which is in fact met by all classical constructions.                               from F1 and F2.
+
+
+                                                                          7
+      AEAD                            nColl     KeysColl                     equations that are explicitly specified imply equalities. This
+                                                                             results in the so-called perfect cryptography assumption: in
+      AES-GCM                          [26]      [3, 26, 31, 43]             the previous example, the encryption is perfect, in the sense
+      AES-GCM-SIV                      [26]      [3, 26, 31, 43]             that given enc(k, m) and not k, the attacker learns absolutely
+      ChaCha20-Poly1305                [26]      [3, 26, 31, 43]             nothing about m or k as it cannot apply the decryption equa-
+      Encrypt-then-MAC (EtM)           [26]      [26, 31]                    tion. The attacker cannot change the content of the message,
+                                                                             and no collisions will exist.
+Table 2: Effective attacks against collision resistance of several
+AEADs in the literature. nColl describe collisions where, for given
+                                                                                While the previous assumption may seem too restrictive,
+keys and a header, the attacker uses brute-force over the nonce to           it allows for highly automated tools which are one of the
+produce colliding ciphertexts. In KeysColl, the attacker brute-forces,       strengths of the symbolic model. These tools were already
+given a nonce and header, over the keys.                                     successfully used to automatically find attacks on proto-
+For the generic Encrypt-then-MAC paradigm we give concrete at-               cols [23,60] and aid standardization processes to avoid design-
+tacks for CTR, OFB, CBC, and CFB modes in the full version [20] .            level flaws [21, 24, 48].
+                                                                                In recent years, effort was put into improving the symbolic
+                                                                             model with better and more fine-grained support for cryp-
+   • nonce reuse NR- covering A1 and F6
+                                                                             tographic primitives. [22] introduced a stronger version of
+   • decryption misuse Forge- covering A2, A3, F3 and F4
+                                                                             symbolic Diffie-Hellman group models, while [19] and [36]
+Some modern protocols, like [26] or [49], rely on additional
+                                                                             gave more fine-grained models of cryptographic hash func-
+features of AEADs that we cover in a modular fashion:
+                                                                             tions and digital signatures, respectively.
+   • explicit tag Tag- for most AEADs, one can extract a
+      verification tag from the ciphertext, needed to model
+      protocols like [49] for A6.
+   • explicit commit Com- to extract a value from the cipher-
+                                                                             4.2    Symbolic AEAD models
+      text committing to the inputs of the encryption. Needed                We first explicitly model all the input parameters, making
+      to model protocols like [26] covering A5 and F1.                       the enc and dec having four inputs, enc(k, n, h, m). Then, we
+Collisions can then be lifted to the tag or the commit in a                  model the multiple weaknesses previously discussed. While
+modular fashion, and are essentially only impacting on the                   we focus on providing models for nonce-based AEADs, as
+complexity of mounting concrete attacks.                                     it is the most fine-grained model of AEADs, it is easy to
+   We additionally build a model Leak that provides an ex-                   derive from them models for counter-based or randomized
+plicit capability to reveal the nonce used for encryption to                 AEADs. They can typically be modelled by removing the
+the attacker. Not sending out the nonce by default but using a               explicit nonce as enc(k, h, m), and all equations or capabilites
+dedicated functionality allows accounting for nonce hiding                   given in the following and that do not directly relate to the
+AEADs covering F5. While we cannot claim completeness of                     nonce can be transposed to this case.
+our models w.r.t. to all possible AEAD weaknesses that may
+arise in the future, we provide a set of models based on our
+analysis of the real-world security of AEADs Section 3 that                  Practical Collision models Coll We start by adding colli-
+covers most practical attacks.                                               sion capabilities that match the known real-world collision
+   We develop and specify the previously enumerated mod-                     capabilities. When using these models reports an attack on
+els of AEADs in the symbolic model of cryptography, an                       the protocol in one of the automated tools, we can then inves-
+abstract model used in the formal methods community to                       tigate its feasibility in practice based on the concrete AEAD
+express and automate the analysis of cryptographic proto-                    used and the message encodings by referring to Section 3,
+cols in Section 4.1. We then present symbolic models of the                  and in particular Table 2.
+before-mentioned AEAD weaknesses in Section 4.2.
+                                                                                We start with the capability that can be reasonably com-
+                                                                             puted on many AEADs and was shown to be practical by [26]
+4.1    The symbolic model of cryptography                                    for Facebook’s Message Franking protocol. As an example,
+                                                                             consider the scenario where an attacker tries to produce some
+The symbolic model uses function symbols to denote algo-
+                                                                             colliding ciphertexts given two keys. One option would be to
+rithms, and capture their properties through equations. For
+                                                                             brute-force over the nonce for a fixed header, e.g., an empty
+instance, an encryption is modeled by two binary function
+                                                                             header. If successful, the attacker would have a ciphertext
+symbols enc and dec, with the equation:
+                                                                             that could be decrypted to distinct plaintexts under a common
+                     dec(enc(k, m), k) = m                                   nonce and header using the two keys. We model this nonce
+                                                                             finding algorithm in the symbolic model as an additional func-
+Note that the randomness or nonce is not explicit in this classi-            tion symbol cn , modeling the colliding nonce, which will take
+cal modeling. And crucially, in the symbolic model, only the                 as input all the given parameters the collision depends on. We
+
+
+                                                                         8
+then add the collision model nColl:                                            With FullKeyColl, Full-mColl, Full-nColl, and Full-adColl, we
+                                                                            capture the capability of an attacker to find collisions by just
+         enc(k1 , cn (k1 , k2 , h, m1 , m2 ), h, m1 )                       finding one distinct k, n, h, or m, respectively. These models
+                                                          (nColl)
+        = enc(k2 , cn (k1 , k2 , h, m1 , m2 ), h, m2 )                      may cover collisions that are impractical as their main purpose
+                                                                            is to check whether the analyzed protocol relies on collision
+  Another widespread collision capability is captured by
+                                                                            resistance of AEAD schemes. Indeed, if we get an attack
+adding two function symbols c1k and c2k with the collision
+                                                                            in such a model, it implies that a strong collision resistance
+model KeysColl:
+                                                                            notion is needed to prove the security of the protocol in the
+         enc(c1k (n, h, m1 , m2 ), n, h, m1 )                               computational model. Further, and as we see later in Section 5,
+                                                     (KeysColl)             some of these attack may even be practical and could not have
+        = enc(c2k (n, h, m1 , m2 ), n, h, m2 )
+                                                                            been easily discovered in another way.
+   To check whether a potential attack found using KeysColl
+might be feasible, refer to Table 2. Whereas for KeysColl the               Nonce-reuse NR The nonce-reuse issue A1 is slightly more
+attacker needs to produce a collision on the AEAD for a fixed               complex to model, as we cannot capture it using an equation.
+nonce and header, the same kind of collision appears also to                We thus have to use a less classical way to model primitives:
+be feasible in the case where one of the keys is already fixed.             we model the attacker capability by providing access to an
+We model this slight variation of KeysColl as well (KeyColl).               additional process, or oracle, that does the following:
+   Notice that we, for instance, set that the two colliding en-
+cryptions may necessarily use the same nonce and header in
+those equations. This is caused by many existing protocols                                                                            k-NR
+                                                                                   enc(k1 , n1 , h1 , m1 )
+implementing that nonces and associated data can be com-                                                     if k1 = k2 & n1 = n2 :
+puted independently by the parties, or that they cannot be sent                    enc(k2 , n2 , h2 , m2 )     if m1 ̸= m2 | h1 ̸= h2 :
+out twice with distinct values.                                                                                   k ← k1
+                                                                                             k
+Generic Collision models FullColl The previous collision
+models allow to efficiently check for the collisions that are                  In this oracle, the attacker can provide two ciphertexts. If
+most likely to be practical for existing AEADs and given their              those ciphertexts are encrypted under the same key and nonce
+use in protocols. While obtaining an attack in those models                 but differ in either header of message, the attacker learns the
+is instantly interesting, we may miss some future practical                 secret encryption key. Similar to the collision model, Coll,
+attacks. Indeed, as illustrated by Table 1, most AEADs do not               we included a model of this process into our set of AEAD
+meet the full collision resistance property. As we in fact do not           models and call it k-NR. This process models the strongest
+know if they meet any kind of collision resistance properties               possible leak, namely leakage of the secret key. We can also
+as no proofs exists for many of them, it is possible that in the            make it more fine-grained by leaking, e.g., m1 ⊕ m2 instead
+coming years, new practical ways of building collisions on                  of k. As not all tools in the symbolic model provide sup-
+the existing AEADs are discovered. As such, from a security                 port for exclusive-or like equations, we modeled an over-
+point of view, for any non collision resistant AEADs, it is                 approximation m-NR, which leaks both m1 and m2 as an ex-
+prudent to consider that many more collisions are possible                  ample. Note that with these kinds of oracle-like models, the
+than currently practical.                                                   concrete leaked values can be decided by the capabilities of
+   Our approach makes it easy to define such a prudent model,               the chosen tool and the actual weaknesses listed in Table 1.
+and capture all attacks that may be possible on a protocol
+if the AEADs is not fully collision resistant. We do this                   Decryption Misuses Forge Some protocols, notably SSH,
+by allowing more collisions and changing which part of the                  that allow for ciphertext fragmentation, also use AEADs in a
+encryption input is fixed on both sides, and which part the                 non-recommended way by splitting the atomic dec operation
+attacker is brute-forcing over.                                             into verification and decryption. This may also be the case for
+                                                                            protocols building their own AEAD based on the EtM con-
+               enc(k, n, h, m)
+                                                       (FullKeyColl)        struction. In such a case, instead of dec that checks integrity,
+ = enc(gen-ck (n, n2 , h, h2 , m, m2 ), n2 , h2 , m2 )
+                                                                            we use a weak decryption function w-dec and a verification
+                 enc(k, n, h, m)                                            function verify, with the equations:
+                                                         (Full-mColl)
+ = enc(k2 , n2 , h2 , gen-cm (k, k2 , n, n2 , h, h2 ))
+                                                                                         w-dec(k, n, h, enc(k, n, h, m)) = m
+                enc(k, n, h, m)
+                                                       (Full-nColl)                   verify(enc(k, n, h, m), k, n, h, m) = true
+ = enc(k2 , gen-cn (k, k2 , h, h2 , m, m2 ), h2 , m2 )
+                 enc(k, n, h, m)                                              We model the fact that the decryption is weak by making
+                                                     (Full-adColl)          decryption succeed on messages forged by the attacker using
+ = enc(k2 , n2 , gen-ch (k, k2 n, n2 , m, m2 ), m2 )
+
+                                                                        9
+the forge algorithm:                                                    are covered by the ciphertexts collisions. Further, it appears
+                                                                        that collisions on the ciphertext or the commitment only dif-
+     w-dec(k2 , n2 , h2 , forge(enc(k, n, h, m), m2 )) = m2             fer in the ease of mounting attacks, the commitment being
+                                                                        smaller and easier to manipulate than the whole cipher.
+Remark that a limitation of this Forge model is that the at-
+tacker cannot compute a valid ciphertext for some function of
+the message m, which is sometimes possible. Assume that for             Nonce-Leaking Leak Following F5, we capture that an
+a given protocol we know that plaintexts are pairs of elements,         AEAD may not hide the nonce by adding a nonce extraction
+denoted by < x, y >, we can also add dedicated forgery rules:           function symbol get_nonce along with the needed equation:
+
+ w-dec(k2 , n2 , h2 , forge1 (enc(k, n, h, < m1 , m2 >))) = m1                          get_nonce(enc(k, n, h, m)) = n
+ w-dec(k2 , n2 , h2 , forge2 (enc(k, n, h, < m1 , m2 >))) = m2
+                                                                        This equation can now be also used instead of sending the
+   If the encryption is XOR based, the attacker should also             nonce to the network explicitly.
+be able to encrypt at this stage any XOR of a value to the
+ciphertext. This limitation notably implies that we cannot
+cover in general premature release of ciphertexts or the SSH            Concrete encodings for tools We presented here general
+fragmentation attacks. While we can do this for particular              equations that can be used to capture multiple AEAD weak-
+cases as illustrated, lifting this limitation generically in the        nesses in symbolic models. However, symbolic analysis tools
+symbolic model requires advances in the existing tools and              often have restrictions on the type of equations that are sup-
+symbolic techniques that we consider out of scope for this              ported. The equations most efficiently supported by tools
+work.                                                                   satisfy the so called subterm convergence property: the right
+                                                                        hand side of the equation only contains terms that occur as
+                                                                        subterms in the left-hand side. This is not the case for all
+Explicit Tag Tag Despite the recommendations, some pro-                 equations we introduced. However, all of them can be ex-
+tocols do not use AEADs only through a decryption and en-               pressed in an equivalent fashion using only subterm conver-
+cryption API, but actually rely on some more low-level detail.          gent equations. For instance, for the nColl equation, which is
+For instance, schemes rely on the fact that the ciphertext is           not subterm convergent, the same attacker capability can be
+often a pair (encryption, tag), where the encryption is a basic         captured with the following equations, where we introduce a
+symmetric encryption of the message and the tag is what pro-            new function symbol c as an encoding artifact:
+vides the integrity. Instead of going to such a low-level, which
+would be AEAD dependent, we capture this possibility mod-                 enc(k1 , cn (ct(k1 , k2 , h, m1 , m2 )), h, m1 )
+ularly by adding a new function symbol get_tag, that inputs                        = ct(k1 , k2 , h, m1 , m2 )
+ciphertext enc(k, n, h, m). We can then model collisions over                                                                (nColl − subterm)
+                                                                          enc(k2 , cn (ct(k1 , k2 , h, m1 , m2 )), h, m2 )
+the tags, by adding a variant of each of the previous collision                    = ct(k1 , k2 , h, m1 , m2 )
+equations over the tag, with, e.g., nTag being:
+
+       get_tag(enc(k1 , cn (k1 , k2 , h, m1 , m2 ), h, m1 ))            4.3    Automated analysis methodology
+      = get_tag(enc(k2 , cn (k1 , k2 , h, m1 , m2 ), h, m2 ))
+                                                                        We now have a set of models to capture multiple weaknesses
+Reasoning about explicit tags allows for a top-down approach            of AEADs. To analyze a protocol, the following steps should
+rather than bottom up. For example, it allows us to ignore im-          be followed with the symbolic tool of choice:
+plementation details, such as to which side of the encryption            1. Verify the protocol in all possible threat models (mali-
+the tag is concatenated.                                                    cious participants, AEADs weaknesses)
+                                                                         2. If there is an attack based on collisions or nonce misuse,
+Explicit commitment Com We model compactly commit-                          check which AEAD the protocol is using and whether it
+ting AEADs by adding a get-commit function symbol sim-                      has the corresponding weakness (Table 1);
+ilar to the get_tag. Once again, this allows for a modular               3. If an attack is from KeyColl, KeysColl, or nColl, use Sec-
+model of compactly committing AEADs, where we only spec-                    tion 3.3 to check whether the use AEAD is non collision
+ify that a commitment can be extracted, but do not specify                  resistant. If it is not, check Table 2 to evaluate if the
+how. This extraction can be combined with the collision capa-               attack is practical or not.
+bilities to model non-committing AEADs, as a collision on                4. If an attack is from one of the over-approximated capabil-
+the ciphertexts directly translates to a collision on the com-              ities FullKeyColl,Full-mColl,Full-nColl, Full-adColl, there
+mitment. Modeling the fact that the collisions are only on the              are two consequences:
+commitment in a more fine grained way would be possible,                        • Collision Resistance is probably needed to prove
+but would not yield better attack finding capabilities as they                     the protocol computationally secure.
+
+
+                                                                   10
+        • The attack may however be impractical, and one                others. This reduces the possible model combinations to 29
+          needs to check the trace to see if the attacker can           (and up to 213 for class 2).) As this is still a huge number of
+          have enough control over the ciphertext inputs to             calls, we can use the same implications mentioned before to
+          create a collision.                                           do some dynamic pruning. The number of prunable model
+                                                                        combinations can vary a lot depending on the case study. The
+                                                                        total TAMARIN calls that our script automatically made for
+False attacks In the previously outlined methodology, we
+                                                                        our case studies can be found in Table 3. Using these impli-
+say that an attack found in our TAMARIN models may not be
+                                                                        cations is useful, both for dynamic pruning and to optimize
+a true attack. To provide more details: during modeling, we
+                                                                        the search, but also to provide a more compact view of the
+sometimes on purpose overapproximate the possible AEAD
+                                                                        final results, only displaying non-redundant secure or inse-
+weaknesses, both to completely rule out classes of attacks or
+                                                                        cure scenarios. Our script provides us with a summary of the
+detect subtle attacks. This may indeed lead to us finding “false
+                                                                        security of a scheme, that can then be formatted in a table as
+attacks” that are possible on the design of the protocol but not
+                                                                        illustrated in Table 4.
+on all possible implementations for all concrete primitives.
+                                                                           A limiting factor in our analysis is the run-time of the
+In such cases, when by following the methodology we get
+                                                                        protocol models. As the problem of automatically analysing
+an attack trace, we have to carefully inspect it, and identify
+                                                                        protocol models is in general undecidable, running TAMARIN
+precisely whether it could lead to an attack on the concrete
+                                                                        could lead to non-termination. We deal with this possibility
+protocol. This typically depends on details of the plaintext
+                                                                        by introducing timeouts into our experiments such that for
+encoding used by the protocol (json, concatenation, lengths,
+                                                                        each TAMARIN call, we either find a proof, a potential attack
+etc).
+                                                                        trace, or we have a timeout.
+                                                                           Using our technique, which automatically modifies the
+The TAMARIN prover Our methodology is generalized                       model for each of the AEAD model combinations, can lead
+enough to not be bound to a specific tool. The tool of                  to non-termination more easily, especially on fragile models
+choice needs to support custom equational theories and ex-              that were manually tailored toward termination. We selected
+plicit means to express attacker knowledge. These are cri-              the value of the timeout depending on the run-time of the
+teria fulfilled by various state-of-the-art symbolic tools like         protocol model with the classic AEAD model in use.
+[15, 27, 39]. We chose the TAMARIN prover [45] to demon-                   As an exhaustive search might not be feasible, during the
+strate our methodology, as it offers a straightforward way              modelling process of new case studies, in Appendix A we
+to add custom equational theories and oracle-like processes             describe how one can correctly choose the right AEAD model
+needed for NR.                                                          for a certain protocol model.
+
+Automated analysis setup We split the models from Sec-                  5   Case studies
+tion 4 into two general classes:
+  1. collisions and nonce misuse (Coll, NR, Leak)                       We demonstrate our symbolic models for automated verifica-
+  2. explicit functionalities (Forge, Com, Tag)                         tion on a set of eight protocols, classified into four categories
+   Class 1) corresponds to a set of weaknesses that we can              depending on the analysed security property:
+check on any protocol using an AEAD scheme. We build a                     • Key Secrecy - rediscovering the attack on YubiHSM [61]
+library of those models and a script that verifies the security            • Authentication - rediscovering the attack on SFrame [49]
+of a given protocol against those models. Class 2) only makes              • Accountability - rediscovering the attacks on the ac-
+sense on protocols that do rely on some explicit functionality,              countability of the Facebook Message Franking mecha-
+like an explicit commitment. Hence, we only model them in                    nism [28] and finding that the Web Push [56] standard
+the relevant cases where the protocol relies on these explicit               does not provide server accountability.
+functionalities. For our set of case studies, we want to ex-               • Content Agreement - analysis of multiple group messag-
+plore their security guarantees against all our AEAD models.                 ing and content delivery protocols, namely SaltPack [53],
+To do so, we implemented a Python script that for a given                    WhatsApp Groups [59], Scuttlebutt [54], and GPG [38].
+protocol, automatically executes TAMARIN for all possible                  We tested our methodology on a computing cluster with
+combinations of threat models, and provides a summary of                Intel® Xeon® Gold 6244 CPUs and 1TB RAM against all
+the secure or insecure scenarios.                                       possible combinations of the threat models from Section 4.
+   When doing this exhaustively, it would mean running                  We automate this process using a Python program as de-
+TAMARIN 210 times for each case study of class 1) and up                scribed in Section 4.3. For each TAMARIN call within our
+to 219 times for class 2). We optimize the script by re-using           script we limit TAMARIN to use 4 threads and set the timeout
+strict implications of some of our models, e.g. FullKeyColl             to 60 seconds per TAMARIN call.
+makes the attacker strictly more powerful than KeyColl, some               For the 8 case studies (plus 3 variants) we had a total eval-
+models can be restricted to not be used at the same time with           uation time of 17 hours and 29 minutes with a total of 1404
+
+
+                                                                   11
+Protocol                          AEAD Scheme                  Model       Analysis Results             Time (s)     Novel?       Status
+YubiHSM [61]                      AES-CCM                      NR          Key secrecy attack                   2     [42]        Fixed
+SFrame [49]                       AES-GCM, EtM CTR             Tag         Authentication attack               <1     [33]        Fixed
+FB Message Franking [28]          AES-GCM                      Coll        Content Agreement attack             8     [26]        Fixed
+FB Message Franking [28]          AES-GCM                      Coll        Framing attack                       3     [26, 31]    Fixed
+GPG SED [38]                      PGP-CFB                      Coll        No Content Agreement                <1    ✓            Deprecated
+GPG SEIPDv2 [38]                  AES-OCB                      Coll        No Content Agreement                <1    ✓            Infeasible
+Saltpack [53]                     XSalsa20-Poly1305            Coll        No Content Agreement                 8    ✓            Infeasible
+WebPush [56]                      AES-GCM                      Coll        Server Accountability                8    ✓            Reported
+WhatsApp [59]                     EtM CBC                      Coll        No Content Agreement                 3    ✓            Reported ‡
+Scuttlebutt [54]                  XSalsa20-Poly1305            Coll        No Content Agreement                 3    ✓            Reported ∗
+ ∗ = Feasibility depends on the collision resistance of XSalsa20-Poly1305 (not in Table 2.) See discussion in the long version [20] .
+ ‡ = Reported to WhatsApp. Feasibility heavily relies on implementation details, which are not open source.
+
+
+Table 3: Summary of the main analysis results from our case-studies, illustrating the generality of our models by rediscovering previous attacks
+and finding new subtleties. In each case, we give the threat model, the used AEAD scheme, the analysis result, as well as the time it took
+TAMARIN to find it. We also give some additional notes on the status of the observation.
+
+
+TAMARIN calls. The overview of the results can be found                    by our analysis, we modeled Facebook’s Message Franking
+in Table 3. We show an excerpt of the detailed results in Ta-              mechanism in TAMARIN. In the initial setting, with the at-
+ble 4, while all results are reproducible and can be found in              tacker being a malicious sender, we could automatically find
+GitHub [1].                                                                the reported attack in a few seconds using the KeysColl model.
+   Because of space limitations, we only highlight three case                 In addition to analyzing the property violated by the initial
+studies: The Facebook Message Franking mechanism [28],                     attack – can a malicious sender avoid detection? – we also
+the Web Push API [56] and the Whatsapp group messaging                     studied the converse property – can a malicious receiver create
+encryption in Sections 5.1 to 5.3 and refer the reader to the              a fake report? The converse property got first reported as a
+long version [20] for details on remaining case studies and                concern by [31].
+their detailed attack scenarios.                                              We thus additionally model a malicious receiver that tries to
+                                                                           report an honest user. In this threat model, we, therefore, look
+                                                                           at frameability properties. Being able to frame another party
+5.1    Facebooks Message Franking                                          can be severe in practice, for instance, by falsely accusing
+In the setting of End-to-End encryption, reporting the abusive             another person of having sent illegal material. After testing
+behavior of users seems hard to achieve without weakening                  our AEAD models against it, we could re-discover a potential
+security guarantees. In 2016, Facebook introduced Message                  attack [31] on the beforementioned property. However, this
+Franking [28] to allow reporting of offensive message attach-              attack would require finding a collision on the ciphertext for
+ments. The idea is for a recipient of a malicious message                  which one key, the nonce, and the ciphertext itself need to
+attachment to use a cryptographically sound way to prove that              be fixed. Unless further weaknesses of AEADs are found, in
+it was sent by a specific sender.                                          this particular case over AES-GCM, this attack is, as of now,
+                                                                           impractical.
+    [26] found an attack against Facebook’s message franking
+mechanism in 2018. The practical attack they demonstrated
+involved finding a collision on the used AEAD’s ciphertext.                5.2     Web Push
+As the sender in this scenario was able to choose the crypto-
+graphic keys, messages, and the nonce, they showed how to                  The Web Push protocol provides means for a server to push
+compute two keys k1 and k2 , two message attachments (for                  notifications to clients by depositing an encrypted notification
+which one is the malicious one) m1 and m2 , and a nonce n,                 to the push service that will be fetched by the client when they
+such that the encryption of m1 under n and k1 leads to the                 go online. Web Push is standardized at IETF [56], and, for
+same ciphertext as the encryption of m2 under k2 and n.                    instance, Apple is planning to integrate it into its ecosystem.
+   After reporting this attack to Facebook, Facebook immedi-                  Web Push aims to provide confidential push notifications
+ately patched it. That attack demonstrates the practicality and            from a server to its users and to ensure certain privacy proper-
+the impact of collision attacks on real-world schemes.                     ties, like the the unlinkability of unique identifiers through the
+   To show that such attacks can be found on the design level              push notification content. Given the wide array of possible
+
+
+                                                                      12
+           Protocol            Threat Model                                                             Content Agreement
+                               Full-mColl ∧ Full-nColl ∧ Full-adColl ∧ Forge ∧ k-NR ∧ m-NR ∧ Leak                 ✓
+           GPG SED
+                               KeyColl                                                                            ✗
+                               FullKeyColl ∧ Full-nColl ∧ Full-adColl ∧ Forge ∧ k-NR ∧ m-NR ∧ Leak                ✓
+           GPG SEIPDv2
+                               Full-mColl                                                                         ✗
+                               Full-adColl ∧ Forge ∧ k-NR ∧ m-NR ∧ Leak                                           ✓
+           Scuttlebutt
+                               KeysColl ∨ Full-mColl ∨ nColl                                                      ✗
+
+Table 4: Example of how our methodology can, given a protocol and a security property, automatically establish the minimal requirements on
+the AEAD guarantees for the property to hold. We achieve this by analyzing all possible AEAD models, here applied to content agreement for
+GPG SED, GPG SEIPDv2, and Scuttlebutt. For each protocol analysed, we obtain the strongest combination of AEAD models under which
+content agreement holds (✓), which directly yields minimal requirements on the AEAD. The weakest combinations of AEAD models under
+which a potential violation of the target property (here content agreement) is found is marked with (✗).
+
+
+applications and concrete use cases, we consider it interest-            be read differently by some recipients? This question leads us
+ing to check whether the server is accountable or not: can a             to analyze Content Agreement in the following contexts:
+client prove to a third party that it received a particular push            • end-to-end encrypted group messaging applications, like
+notification from a given server? In contexts where push no-                  WhatsApp or Signal, or
+tifications trigger important actions from a user, protecting               • dedicated encrypted message mechanism, like GPG, Salt-
+users from malicious servers that would try to make the user                  pack, or Scuttlebutt.
+act and then be able to claim never having done so is crticial.          Our study reveals that there is a discrepancy between existing
+The importance of this guarantee would depend on the actual              guarantees, which we summarize in Table 5.
+deployment and usage of Web Push; we are currently in an                    We only present the WhatsApp group case study next, and
+ongoing discussion with IETF on this point. To include this              refer the reader to the long version [20] for the others.
+case in our threat model, we thus consider a malicious server
+controlled by the attacker and verify if it is possible to up-
+                                                                         WhatsApp groups We model the design of WhatsApp’s
+load one notification that could be interpreted in two different
+                                                                         group messaging. Because the code of WhatsApp is not avail-
+ways, for instance, offensively or benignly.
+                                                                         able, we constructed our model based on the available infor-
+    Our analysis reports that this guarantee does not hold w.r.t.        mation provided in its whitepaper [59, p. 10]. While it relies
+Full-mColl: a single notification can be decrypted validly to
+                                                                         on the Signal X3DH protocol to establish pairwise channels
+two different plaintexts, depending on whether we use the cur-           between the members of the groups, sending a message is
+rent or deprecated public key of the user. As Full-mColl is a            slightly different:
+strong over-approximation an attack first seemed impractical.
+                                                                            • The sender generates a so called sender key (also part of
+After manual inspection of the counterexample trace given
+                                                                              the Signal library), and sends this key to each participant
+by TAMARIN, we could see that this theoretical attack carries
+                                                                              over the corresponding pairwise channel;
+over to the real world: WebPush relies on AES-GCM, and
+                                                                            • To send a message, there is then a single encrypted pay-
+we can then reuse similar techniques as for Facebook Mes-
+                                                                              load which is uploaded to the server.
+sage Franking attack: concretely, an attacker can brute-force
+                                                                         While content agreement is trivially broken in Signal itself
+over the salt used to produce a nonce/key pair to encrypt the
+                                                                         because of the pairwise channels, it could intuitively be ex-
+message to find a collision over the unauthenticated part of
+                                                                         pected within the setting of group messaging. It is however
+the ciphertext, and then inject at the end of the ciphertext the
+                                                                         not guaranteed, as reported by our model. Our model captures
+needed block to create a collision over the tag. The practical-
+                                                                         a group of three people, where one of them is the attacker.
+ity of the attack depends on the encoding of the plaintexts,
+                                                                         We then aim to verify that a given message uploaded to the
+and the severity depends on whether the server being not
+                                                                         server will yield the same plaintext for all group members.
+accountable is critical given the use case.
+                                                                         Our automated analysis reports an attack on this property
+                                                                         when enabling ciphertext collisions under KeyColl.
+5.3    Content Agreement                                                    The group messaging mechanism relies on an AES-CBC
+                                                                         encryption which is then signed with an independent key.
+We focus now on analyzing the design of multiple messag-                 This is similar to the Encrypt-then-Mac with unrelated keys
+ing mechanisms. We study them in the multiple-recipient                  scenario. It means that the complexity of mounting an attack
+setting, trying to answer the following question: Can a dis-             in practice is equivalent to the complexity of finding mean-
+honest member of the group send a single message that will               ingful collisions over AES-CBC. We have seen that with the
+
+
+                                                                    13
+                                   Content Agreement       Content Agreement
+ Protocol                                                                                Notes
+                                        with CR               without CR
+ Whatsapp                                  ✓                       ✗                     Practicality depends on plaintext encodings
+ Scuttlebutt                               ✓                       ✗                     Practical
+ GPG SED (to be deprecated)                ✓                       ✗                     Practical
+ GPG SEIPD v1/v2                           ✓                       ✓                     Only theoretical attacks
+ SaltPack                                  ✓                       ✓                     Only theoretical attacks
+ Signal                                      ✗                           ✗               Pairwise channels, hence no content agreement
+
+                           Table 5: Content Agreement summary, with and without Collision Resistance (CR)
+A summary of our findings for Content Agreement: for a set of group messaging applications and multiple recipients message
+sending mechanism, we summarize whether a given message can yield to different message for multiple users. In this table, we
+   mention that the Signal application does not meet consistency as a side-remark: as Signal uses pairwise channels to send
+                      messages in groups, a different message can be sent to each member of the group.
+
+
+current capabilities, this strongly depends on the concrete                  feasible in practice. Unfortunately this is not the case yet.
+encoding of plaintexts, and whether we can find so-called                       In terms of possible AEAD definitions and their differ-
+polyglot plaintexts [3]. As WhatsApp is closed source, veri-                 ences, there are subtle differences that we currently do not
+fying the practicality of the attack would require to reverse                capture yet. This includes, for example, properties beyond
+engineer the full message encoding, which we consider out of                 collisions and nonce-reuse, such as the “s-way commiting
+scope for this paper. However, given the variety of possible                 security property” [9] that generalizes the CMT notions to
+message contents (notification, GIFs, media, React, . . . ) it is            the multi-user setting. Our models can also be improved with
+likely that the encoding would be loose enough to carry out                  respect to the Forge capability, as discussed in Section 4. On
+the attack.                                                                  the positive side, we define general models and capture for
+                                                                             instance collisions that given the current knowledge are not
+                                                                             practical, but could become so in the future, e.g., with new
+5.4    Disclosure                                                            developments on AES. While we do not claim to cover all
+Using our methodology, we detected several undesirable be-                   possible AEAD attacks in the future, this allows to future
+haviors in the protocol design of Scuttlebutt, Web Push, and                 proof protocols.
+WhatsApp Groups [54, 56, 59]. While the behaviors are possi-                    With respect to practical feasibility of attacks, the funda-
+ble on the protocol design level, their implementation-level                 mental problem is that our analysis method and standard cryp-
+feasibility depends on low-level encoding choices.                           tographic analyses in fact consider protocols designs and not
+   The behaviors we found did not violate the main specified                 their implementation details. For example, this includes ab-
+goals of the respective protocols, and hence we did not mark                 stracting away from encoding details, i.e., how values and
+them as “attacks”. Nevertheless, we contacted the developers                 compound structures are exactly mapped to bitstrings. Yet
+of the affected protocols and explained our observations, such               such details are critical to determine whether certain collision
+that they can assess their implementation-level feasibility,                 attacks are possible or not. As a consequence, when we find
+with distinct feedback:                                                      an attack on the protocol design, this should intuitively be
+   • The developers of the WebPush standard acknowledged                     interpreted as: there exists an encoding scheme for which the
+     the issue, and a discussion is ongoing to determine how                 protocol implementation is insecure. We argue that security
+     to best document these possible behaviors in the stan-                  of a protocol design should avoid depending on its encoding
+     dard;                                                                   scheme, and if not, specify the requirements explicitly. The
+   • WhatsApp considered this outside their threat model,                    problems we found here using our framework are therefore
+     and noted that using a different AEAD would still allow                 real concerns for the protocol designs. Still, manual inspec-
+     a variant of the behavior with the same effect; and                     tion of the implementation is still needed to check whether
+   • The Scuttlebutt developers did not respond.                             the encodings allow for generation of the required collisions;
+                                                                             but our analysis indicates the types of collisions needed.
+
+6     Limitations
+                                                                             7   Further Related Work
+In an ideal world, we would like to (a) cover all possible
+AEAD definitions and weaknesses, and (b) have the guaran-                We provided background and summary of the related works on
+tee that if our method reports an attack, the attack is always           AEADs in the first two sections. Here we discuss additional
+
+
+                                                                    14
+works in formal analysis of security protocols.                          Acknowledgments
+   Improving the symbolic models of primitives to enable
+                                                                         This work received funding from the France 2030 program
+automated attack finding has recently been explored for sev-
+                                                                         managed by the French National Research Agency under
+eral types of basic primitives, like cryptographic hashes [19],
+                                                                         grant agreement No. ANR-22-PECY-0006.
+Diffie-Hellman groups [22], or digital signatures [36]. Our
+work is centered on AEAD, for which no systematic approach
+had been attempted yet.                                                  References
+   Ad-hoc approaches include a specific form of nonce-reuse               [1] Tamarin models and analysis scripts to reproduce the
+in the Tamarin analysis of WPA [23] and the analysis of                       results in this paper, 2023. https://github.com/Aut
+Yubikey [42]. In a different approach, [40] modeled the fine-                 omatedAnalysisOf/AEADProtocols.
+grained block based encryption in the tool ProVerif, but this
+approach did not scale to protocols of the complexity consid-             [2] Michel Abdalla, Mihir Bellare, and Gregory Neven. Ro-
+ered here. Overall, our work is the first to systematically ex-               bust Encryption. Cryptology ePrint Archive, Report
+plore weaknesses of concrete algorithms or formal definitions                 2008/440, 2008. https://ia.cr/2008/440.
+for AEADs and provide models amenable to automation.
+                                                                          [3] Ange Albertini, Thai Duong, Shay Gueron, Stefan Kölbl,
+  ProVerif [14] is, besides Tamarin, the other major tool for                 Atul Luykx, and Sophie Schmieg. How to Abuse and Fix
+automated analysis of protocols in the symbolic model. While                  Authenticated Encryption Without Key Commitment. In
+we developed our models and case-studies in Tamarin, they                     31st USENIX Security Symposium, 2020.
+could also be used in the ProVerif framework.
+                                                                          [4] Martin R Albrecht, Jean Paul Degabriele, Torben Brandt
+   As we are focused on automated attack finding due to real                  Hansen, and Kenneth G Paterson. A surfeit of SSH
+life weaknesses of AEADs, our work is orthogonal to tools                     cipher suites. In Proceedings of the 2016 ACM SIGSAC
+from the computational model [6, 7, 13] that are all focused                  Conference on Computer and Communications Security,
+on proving security, and cannot find attacks. Our automated                   pages 1480–1491, 2016.
+models can be useful to establish the assumptions on the
+AEAD before attempting a computational proof.                             [5] Martin R Albrecht, Kenneth G Paterson, and Gaven J
+                                                                              Watson. Plaintext recovery attacks against SSH. In 30th
+   With respect to our case studies, based on the absence of
+                                                                              IEEE Symposium on Security and Privacy, pages 16–26,
+collision resistance of AEADs, also referred to as robust-
+                                                                              2009.
+ness or key-commitment, [26] already reported an attack on
+the Facebook abuse reporting mechanism, which violates ac-                [6] David Baelde, Stéphanie Delaune, Charlie Jacomme,
+countability. We are the first to report on behaviors in which is             Adrien Koutsos, and Solène Moreau. An interactive
+content agreement is not satisfied due to AEAD weaknesses.                    prover for protocol verification in the computational
+Other undesirable behaviors have arisen due to collisions,                    model. In 2021 IEEE Symposium on Security and Pri-
+which are linked to oracle partitioning attacks [43], where an                vacy (SP), pages 537–554. IEEE, 2021.
+attacker can obtain a better than brute force advantage against
+the OPAQUE protocol. While we can model the relevant                      [7] Gilles Barthe, Benjamin Grégoire, Sylvain Heraud, and
+AEAD weakness in our framework, modeling the violated                         Santiago Zanella Béguelin. Computer-aided security
+security property in the symbolic model is left to future work.               proofs for the working cryptographer. In Annual Cryp-
+                                                                              tology Conference, pages 71–90. Springer, 2011.
+                                                                          [8] Guy Barwell, Daniel Page, and Martijn Stam. Rogue
+                                                                              Decryption Failures: Reconciling AE Robustness No-
+                                                                              tions. In Proceedings of the 15th IMA International
+8   Conclusions                                                               Conference on Cryptography and Coding, page 94–111,
+                                                                              2015.
+We developed the first methodology to analyse the impact of
+                                                                          [9] Mihir Bellare and Viet Tung Hoang. Efficient Schemes
+detailed AEAD behaviors on the protocols that use them. Our
+                                                                              for Committing Authenticated Encryption. Cryptology
+methodology thus enables detecting protocol weaknesses for
+                                                                              ePrint Archive, Report 2022/268, 2022. https://ia.c
+a given AEAD, or conversely, determining a protocol’s AEAD
+                                                                              r/2022/268.
+requirements. The case studies indicate that our methodol-
+ogy is effective and efficient in finding potential weaknesses,          [10] Mihir Bellare, Ruth Ng, and Björn Tackmann. Nonces
+notably automatically finding attacks that previously could                   are Noticed: AEAD Revisited. Cryptology ePrint
+only found by manual inspection, thus bringing a new class                    Archive, Report 2019/624, 2019. https://ia.cr/
+of attacks within the realm of automated detection.                           2019/624.
+
+
+                                                                    15
+[11] Mihir Bellare, Phillip Rogaway, and David Wagner. The           [22] Cas Cremers and Dennis Jackson. Prime, Order Please!
+     EAX mode of operation. In International Workshop on                  Revisiting Small Subgroup and Invalid Curve Attacks
+     Fast Software Encryption, pages 389–407, 2004.                       on Protocols using Diffie-Hellman. In 32nd IEEE Com-
+                                                                          puter Security Foundations Symposium, pages 78–93,
+[12] Ritam Bhaumik and Mridul Nandi. Improved security                    2019.
+     for OCB3. In International Conference on the Theory
+     and Application of Cryptology and Information Security,         [23] Cas Cremers, Benjamin Kiesl, and Niklas Medinger. A
+     pages 638–666, 2017.                                                 Formal Analysis of IEEE 802.11’s WPA2: Countering
+                                                                          the Kracks Caused by Cracking the Counters. In 29th
+[13] Bruno Blanchet. CryptoVerif: Computationally sound
+                                                                          USENIX Security Symposium, pages 1–17, 2020.
+     mechanized prover for cryptographic protocols. In
+     Dagstuhl seminar “Formal Protocol Verification Ap-              [24] Alexander Dax, Robert Künnemann, Sven Tangermann,
+     plied, volume 117, page 156, 2007.                                   and Michael Backes. How to wrap it up-a formally veri-
+[14] Bruno Blanchet, Vincent Cheval, and Véronique Cortier.               fied proposal for the use of authenticated wrapping in
+     Proverif with lemmas, induction, fast subsumption, and               PKCS# 11. In IEEE 32nd Computer Security Founda-
+     much more. In 42nd IEEE Symposium on Security and                    tions Symposium (CSF), pages 62–6215, 2019.
+     Privacy (S&P’22), 2022.
+                                                                     [25] Jean Paul Degabriele and Kenneth G Paterson. On the
+[15] Bruno Blanchet, Ben Smyth, Vincent Cheval, and Marc                  (in) security of IPsec in MAC-then-encrypt configura-
+     Sylvestre. ProVerif 2.00: automatic cryptographic pro-               tions. In Proceedings of the 17th ACM conference on
+     tocol verifier, user manual and tutorial, 2018.                      Computer and communications security, pages 493–504,
+                                                                          2010.
+[16] Alexandra Boldyreva, Jean Paul Degabriele, Kenneth G
+     Paterson, and Martijn Stam. Security of symmetric en-           [26] Yevgeniy Dodis, Paul Grubbs, Thomas Ristenpart, and
+     cryption in the presence of ciphertext fragmentation. In             Joanne Woodage. Fast Message Franking: From Invis-
+     Annual International Conference on the Theory and Ap-                ible Salamanders to Encryptment. Cryptology ePrint
+     plications of Cryptographic Techniques, pages 682–699,               Archive, Report 2019/016, 2019. https://ia.cr/20
+     2012.                                                                19/016.
+[17] Brice Canvel, Alain Hiltgen, Serge Vaudenay, and Mar-           [27] Santiago Escobar, Catherine Meadows, and José
+     tin Vuagnoux. Password interception in a SSL/TLS                     Meseguer. Maude-NPA: Cryptographic protocol anal-
+     channel. In Annual International Cryptology Confer-                  ysis modulo equational properties. In Foundations of
+     ence, pages 583–599, 2003.                                           Security Analysis and Design, pages 1–50. Springer,
+[18] John Chan and Phillip Rogaway. Anonymous AE.                         2009.
+     Cryptology ePrint Archive, Report 2019/1033, 2019.
+                                                                     [28] Facebook - Messenger Secret Conversations Technical
+     https://ia.cr/2019/1033.
+                                                                          Whitepaper. https://about.fb.com/wp-content/u
+[19] Vincent Cheval, Cas Cremers, Alexander Dax, Lucca                    ploads/2016/07/messenger-secret-conversat
+     Hirschi, Charlie Jacomme, and Steve Kremer. Hash                     ions-technical-whitepaper.pdf, 2017. accessed:
+     Gone Bad: Automated discovery of protocol attacks that               2022-08-08.
+     exploit hash function weaknesses. In USENIX 2023,
+     2023.                                                           [29] Pooya Farshim, Claudio Orlandi, and Răzvan Roşie. Se-
+                                                                          curity of Symmetric Primitives under Incorrect Usage
+[20] Cas Cremers, Alexander Dax, Charlie Jacomme, and                     of Keys. Cryptology ePrint Archive, Report 2017/288,
+     Mang Zhao. Automated Analysis of Protocols that use                  2017. https://ia.cr/2017/288.
+     Authenticated Encryption: Analysing the Impact of the
+     Subtle Differences between AEADs on Protocol Secu-              [30] Pierre-Alain Fouque, Gwenaëlle Martinet, Frédéric
+     rity. In USENIX Security 2023, Anaheim, United States,               Valette, and Sébastien Zimmer. On the Security of the
+     August 2023. USENIX.                                                 CCM Encryption Mode and of a Slight Variant. In In-
+     https://inria.hal.science/hal-04126116.                              ternational Conference on Applied Cryptography and
+                                                                          Network Security, pages 411–428, 2008.
+[21] Cas Cremers, Marko Horvat, Jonathan Hoyland, Sam
+     Scott, and Thyla van der Merwe. A comprehensive sym-            [31] Paul Grubbs, Jiahui Lu, and Thomas Ristenpart. Mes-
+     bolic analysis of TLS 1.3. In Proceedings of the 2017                sage Franking via Committing Authenticated Encryp-
+     ACM SIGSAC Conference on Computer and Communi-                       tion. Cryptology ePrint Archive, Report 2017/664, 2017.
+     cations Security, pages 1773–1788, 2017.                             https://ia.cr/2017/664.
+
+
+                                                                16
+[32] Shay Gueron and Yehuda Lindell. GCM-SIV: full nonce             [43] Julia Len, Paul Grubbs, and Thomas Ristenpart. Parti-
+     misuse-resistant authenticated encryption at under one               tioning Oracle Attacks. In 30th USENIX Security Sym-
+     cycle per byte. In Proceedings of the 22nd ACM SIGSAC                posium, 2021.
+     Conference on Computer and Communications Security,
+     pages 109–119, 2015.                                            [44] David A McGrew and John Viega. The security and
+                                                                          performance of the Galois/Counter Mode (GCM) of
+[33] Takanori Isobe, Ryoma Ito, and Kazuhiko Minematsu.                   operation. In International Conference on Cryptology
+     Security Analysis of SFrame. In European Sympo-                      in India, pages 343–355, 2004.
+     sium on Research in Computer Security, pages 127–146,
+                                                                     [45] Simon Meier, Benedikt Schmidt, Cas Cremers, and
+     2021.
+                                                                          David Basin. The TAMARIN prover for the symbolic
+[34] Tetsu Iwata, Keisuke Ohashi, and Kazuhiko Minematsu.                 analysis of security protocols. In International confer-
+     Breaking and repairing GCM security proofs. In Annual                ence on computer aided verification, pages 696–701,
+     Cryptology Conference, pages 31–49, 2012.                            2013.
+
+[35] Tetsu Iwata and Yannick Seurin. Reconsidering the               [46] Kazuhiko Minematsu, Stefan Lucks, and Tetsu Iwata.
+     Security Bound of AES-GCM-SIV. IACR Transactions                     Improved authenticity bound of EAX, and refinements.
+     on Symmetric Cryptology, pages 240–267, 2017.                        In International Conference on Provable Security, pages
+                                                                          184–201, 2013.
+[36] Dennis Jackson, Cas Cremers, Katriel Cohn-Gordon,
+                                                                     [47] Serge Mister and Robert Zuccherato. An attack on CFB
+     and Ralf Sasse. Seems Legit: Automated Analysis of
+                                                                          mode encryption as used by OpenPGP. In International
+     Subtle Attacks on Protocols that Use Signatures. In Pro-
+                                                                          Workshop on Selected Areas in Cryptography, pages
+     ceedings of the ACM SIGSAC Conference on Computer
+                                                                          82–94, 2005.
+     and Communications Security, pages 2165–2180, 2019.
+                                                                     [48] Karl Norrman, Vaishnavi Sundararajan, and Alessandro
+[37] Jakob Jonsson. On the security of CTR+ CBC-MAC.                      Bruni. Formal Analysis of EDHOC Key Establishment
+     In International Workshop on Selected Areas in Cryp-                 for Constrained IoT Devices. CoRR, abs/2007.11427,
+     tography, pages 76–93, 2002.                                         2020.
+[38] Werner Koch, Paul Wouters, Daniel Huigens, and Jus-             [49] E. Omara, J. Uberti, A. GOUAILLARD, and S. Murillo.
+     tus Winter. OpenPGP Message Format. Internet-Draft                   Secure Frame (SFrame) v01. https://datatracke
+     draft-ietf-openpgp-crypto-refresh-06, Internet Engineer-             r.ietf.org/doc/html/draft-omara-sframe-01,
+     ing Task Force, June 2022. Work in Progress.                         2020. accessed: 2022-08-08.
+[39] Steve Kremer and Robert Künnemann. Automated anal-              [50] Gordon Procter. A Security Analysis of the Composi-
+     ysis of security protocols with global state. Journal of             tion of ChaCha20 and Poly1305. In Cryptology ePrint
+     Computer Security, 24(5):583–616, 2016.                              Archive, Paper 2014/613, 2014. https://eprint.iac
+                                                                          r.org/2014/613.
+[40] Steve Kremer and Mark D. Ryan. Analysing the Vulner-
+     ability of Protocols to Produce Known-pair and Chosen-          [51] Phillip Rogaway.      Authenticated-Encryption with
+     text Attacks. In Riccardo Focardi and Gianluigi Za-                  Associated-Data. In Proceedings of the 9th ACM Confer-
+     vattaro, editors, Proceedings of the 2nd International               ence on Computer and Communications Security, CCS
+     Workshop on Security Issues in Coordination Models,                  ’02, page 98–107, 2002.
+     Languages and Systems (SecCo’04), volume 128 of Elec-
+     tronic Notes in Theoretical Computer Science, pages             [52] Phillip Rogaway and John Steinberger.           Secu-
+     84–107, London, UK, May 2005. Elsevier Science Pub-                  rity/Efficiency Tradeoffs for Permutation-Based Hash-
+     lishers.                                                             ing. In EUROCRYPT 2008, pages 220–236, 2008.
+                                                                     [53] Saltpack v2. https://saltpack.org/encryptio
+[41] Ted Krovetz and Phillip Rogaway. The software per-
+                                                                          n-format-v2, 2017. accessed: 2022-08-08.
+     formance of authenticated-encryption modes. In Inter-
+     national Workshop on Fast Software Encryption, pages            [54] Scuttlebot Private Box v0.3.1. https://scuttleb
+     306–327, 2011.                                                       ot.io/more/protocols/private-box.html, 2019.
+                                                                          accessed: 2022-08-08.
+[42] Robert Künnemann and Graham Steel. YubiSecure?
+     Formal security analysis results for the Yubikey and            [55] Alon Shakevsky, Eyal Ronen, and Avishai Wool. Trust
+     YubiHSM. In International Workshop on Security and                   Dies in Darkness: Shedding Light on Samsung’s Trust-
+     Trust Management, pages 257–272. Springer, 2012.                     Zone Keymaster Design. In Cryptology ePrint Archive,
+
+
+                                                                17
+     Paper 2022/208, 2022. https://eprint.iacr.org/                       As this is an over-approximation of the before-mentioned
+     2022/208.                                                            weakness, you can also decide to instead of leaking the
+                                                                          encryption key, to leak the XOR of plaintext (if your tool
+[56] Martin Thomson. Message Encryption for Web Push.                     of choice allows modeling of XOR) or to output a forged
+     RFC 8291, November 2017.                                             ciphertext under the given key.
+[57] Mathy Vanhoef and Frank Piessens. Key reinstallation               • When checking Table 1 again, AES-GCM is not colli-
+     attacks: Forcing nonce reuse in WPA2. In Proceedings                 sion resistant. Then we check Table 2 and see that AES-
+     of the 2017 ACM SIGSAC Conference on Computer and                    GCM is also vulnerable to collisions of type KeysColl
+     Communications Security, pages 1313–1328, 2017.                      (,KeyColl), and nColl. As KeyColl is strictly stronger than
+                                                                          KeysColl, we only need to add KeyColl and nColl to the
+[58] Serge Vaudenay. Security flaws induced by CBC                        set of combinations. However, if we would like to fu-
+     padding—applications to SSL, IPSEC, WTLS... In In-                   ture proof the protocol (and we know that AES-GCM
+     ternational Conference on the Theory and Applications                is not collision-resistant) we could also decide to add
+     of Cryptographic Techniques, pages 534–545, 2002.                    the strongest collision models, e.g. FullKeyColl, instead.
+                                                                          With this, we could see if the protocol relies on collision
+[59] WhatsApp Security Whitepaper. https://www.what                       resistant AEADs.
+     sapp.com/security/WhatsApp-Security-White                          • As the described protocol explicitly uses AES-GCM tags
+     paper.pdf, 2021. accessed: 2022-08-08.                               we would also add the Tag models. As collisions on tags
+                                                                          are as hard or even easier than finding collisions on the
+[60] Jianliang Wu, Ruoyu Wu, Dongyan Xu, Dave Jing Tian,
+                                                                          AEAD scheme itself, we would recommend to use at
+     and Antonio Bianchi. Formal Model-Driven Discovery
+                                                                          least the same kind of collision types for tags as well, for
+     of Bluetooth Protocol Design Vulnerabilities. In IEEE
+                                                                          instance FullKeyTag.
+     Symposium on Security and Privacy (SP), pages 2285–
+     2303, 2022.
+
+[61] YubiHSM. https://www.yubico.com/resource/hs
+     m-security-for-manufacturing/, 2021. accessed:
+     2022-08-08.
+
+[62] Zerologon – hacking Windows servers with a bunch
+     of zeros . https://nakedsecurity.sophos.com
+     /2020/09/17/zerologon-hacking-windows-ser
+     vers-with-a-bunch-of-zeros/, 2020. accessed:
+     2023-02-01.
+
+
+A    Choosing the correct AEAD model
+Whereas using the fully automated methodology from the
+previous section covers all AEAD models, it can be out-of-
+scope for complex and detailed protocol models. As complex
+protocol models often need manual work to aid automation, it
+might be more feasible to a priori choose the correct AEAD
+model for the instantiations actually used in the protocol. We
+demonstrate a way to choose the right combinations of AEAD
+models on the example of a toy protocol using AES-GCM.
+Assume that the protocol explicitly adds the functionality that
+compares the tag instead of using authenticated decryption of
+the ciphertext:
+   • As a first step check whether your protocol specification
+     forbids sending the nonce used for AES-GCM. If no,
+     add Leak to you AEAD model combination.
+   • Check Table 1 and see if the the AEAD is resistant to
+     nonce-reuse attacks. For AES-GCM we see that an XOR
+     of plaintexts can be leaked and there is the possibility to
+     forge ciphertexts. Here, add k-NR to the AEAD models.
+
+
+                                                                   18
+
